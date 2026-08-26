@@ -1,0 +1,154 @@
+[
+  {
+    "route": "/",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "content_length": "2513",
+    "location": "",
+    "sample": "<!--\n Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)\n\n Licensed under the Apache License, Version 2.0 (the \"License\");\n you may not use this file except in compliance with the License.\n You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0\n\n Unless required by applicable law or agreed to in writing, software\n distributed under the License is distributed on an \"AS IS\" BASIS,\n WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or im"
+  },
+  {
+    "route": "/_stcore/health",
+    "status": 200,
+    "content_type": "text/plain; charset=utf-8",
+    "content_length": "6",
+    "location": "",
+    "sample": "ok"
+  },
+  {
+    "route": "/_stcore/host-config",
+    "status": 200,
+    "content_type": "application/json",
+    "content_length": "240",
+    "location": "",
+    "sample": "{\"allowedOrigins\":[\"https://devel.streamlit.test\",\"https://*.streamlit.apptest\",\"https://*.streamlitapp.test\",\"https://*.streamlitapp.com\",\"https://share.streamlit.io\",\"https://share-demo.streamlit.io\",\"https://share-head.streamlit.io\",\"https://share-staging.streamlit.io\",\"https://*.demo.streamlit.run\",\"https://*.head.streamlit.run\",\"https://*.staging.streamlit.run\",\"https://*.streamlit.run\",\"https://*.demo.streamlit.app\",\"https://*.head.streamlit.app\",\"https://*.staging.streamlit.app\",\"https://"
+  },
+  {
+    "route": "/_stcore/allowed-message-origins",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "content_length": "2649",
+    "location": "",
+    "sample": "<!--\n Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)\n\n Licensed under the Apache License, Version 2.0 (the \"License\");\n you may not use this file except in compliance with the License.\n You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0\n\n Unless required by applicable law or agreed to in writing, software\n distributed under the License is distributed on an \"AS IS\" BASIS,\n WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or im"
+  },
+  {
+    "route": "/healthz",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "content_length": "2649",
+    "location": "",
+    "sample": "<!--\n Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)\n\n Licensed under the Apache License, Version 2.0 (the \"License\");\n you may not use this file except in compliance with the License.\n You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0\n\n Unless required by applicable law or agreed to in writing, software\n distributed under the License is distributed on an \"AS IS\" BASIS,\n WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or im"
+  },
+  {
+    "route": "/health",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "content_length": "2649",
+    "location": "",
+    "sample": "<!--\n Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)\n\n Licensed under the Apache License, Version 2.0 (the \"License\");\n you may not use this file except in compliance with the License.\n You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0\n\n Unless required by applicable law or agreed to in writing, software\n distributed under the License is distributed on an \"AS IS\" BASIS,\n WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or im"
+  },
+  {
+    "route": "/api",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "content_length": "2649",
+    "location": "",
+    "sample": "<!--\n Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)\n\n Licensed under the Apache License, Version 2.0 (the \"License\");\n you may not use this file except in compliance with the License.\n You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0\n\n Unless required by applicable law or agreed to in writing, software\n distributed under the License is distributed on an \"AS IS\" BASIS,\n WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or im"
+  },
+  {
+    "route": "/api/",
+    "status": 301,
+    "content_type": "",
+    "content_length": "0",
+    "location": "/api",
+    "sample": ""
+  },
+  {
+    "route": "/api/clean",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "content_length": "2649",
+    "location": "",
+    "sample": "<!--\n Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)\n\n Licensed under the Apache License, Version 2.0 (the \"License\");\n you may not use this file except in compliance with the License.\n You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0\n\n Unless required by applicable law or agreed to in writing, software\n distributed under the License is distributed on an \"AS IS\" BASIS,\n WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or im"
+  },
+  {
+    "route": "/api/clean/",
+    "status": 301,
+    "content_type": "",
+    "content_length": "0",
+    "location": "/api/clean",
+    "sample": ""
+  },
+  {
+    "route": "/api/health",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "content_length": "2649",
+    "location": "",
+    "sample": "<!--\n Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)\n\n Licensed under the Apache License, Version 2.0 (the \"License\");\n you may not use this file except in compliance with the License.\n You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0\n\n Unless required by applicable law or agreed to in writing, software\n distributed under the License is distributed on an \"AS IS\" BASIS,\n WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or im"
+  },
+  {
+    "route": "/openapi.json",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "content_length": "2649",
+    "location": "",
+    "sample": "<!--\n Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)\n\n Licensed under the Apache License, Version 2.0 (the \"License\");\n you may not use this file except in compliance with the License.\n You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0\n\n Unless required by applicable law or agreed to in writing, software\n distributed under the License is distributed on an \"AS IS\" BASIS,\n WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or im"
+  },
+  {
+    "route": "/docs",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "content_length": "2649",
+    "location": "",
+    "sample": "<!--\n Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)\n\n Licensed under the Apache License, Version 2.0 (the \"License\");\n you may not use this file except in compliance with the License.\n You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0\n\n Unless required by applicable law or agreed to in writing, software\n distributed under the License is distributed on an \"AS IS\" BASIS,\n WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or im"
+  },
+  {
+    "route": "/docs/",
+    "status": 301,
+    "content_type": "",
+    "content_length": "0",
+    "location": "/docs",
+    "sample": ""
+  },
+  {
+    "route": "/swagger.json",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "content_length": "2649",
+    "location": "",
+    "sample": "<!--\n Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)\n\n Licensed under the Apache License, Version 2.0 (the \"License\");\n you may not use this file except in compliance with the License.\n You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0\n\n Unless required by applicable law or agreed to in writing, software\n distributed under the License is distributed on an \"AS IS\" BASIS,\n WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or im"
+  },
+  {
+    "route": "/robots.txt",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "content_length": "2649",
+    "location": "",
+    "sample": "<!--\n Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)\n\n Licensed under the Apache License, Version 2.0 (the \"License\");\n you may not use this file except in compliance with the License.\n You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0\n\n Unless required by applicable law or agreed to in writing, software\n distributed under the License is distributed on an \"AS IS\" BASIS,\n WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or im"
+  },
+  {
+    "route": "/sitemap.xml",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "content_length": "2649",
+    "location": "",
+    "sample": "<!--\n Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)\n\n Licensed under the Apache License, Version 2.0 (the \"License\");\n you may not use this file except in compliance with the License.\n You may obtain a copy of the License at\n\n     http://www.apache.org/licenses/LICENSE-2.0\n\n Unless required by applicable law or agreed to in writing, software\n distributed under the License is distributed on an \"AS IS\" BASIS,\n WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or im"
+  },
+  {
+    "route": "/favicon.png",
+    "status": 200,
+    "content_type": "image/png",
+    "content_length": "1019",
+    "location": "",
+    "sample": "\ufffdPNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR\u0000\u0000\u0000 \u0000\u0000\u0000 \b\u0006\u0000\u0000\u0000szz\ufffd\u0000\u0000\u0000\tpHYs\u0000\u0000\u000b\u0013\u0000\u0000\u000b\u0013\u0001\u0000\ufffd\ufffd\u0018\u0000\u0000\u0000\u0001sRGB\u0000\ufffd\ufffd\u001c\ufffd\u0000\u0000\u0000\u0004gAMA\u0000\u0000\ufffd\ufffd\u000b\ufffda\u0005\u0000\u0000\u0003\ufffdIDATx\u0001\ufffdW\ufffdO\u0013A\u0014\ufffdm\ufffd\ufffd\n\u0001\ufffdPS\u014f%\ufffd\u0005\ufffd\u0212\u0018<\u0018\ufffd*\ufffd\ufffd \u0002\ufffd\u078c\ufffdE\u000e|(\ufffd<\ufffd^\ufffd\"\ufffd\ufffd?\u0000H\ufffd,!\ufffd\u001bH\ufffd\u0003\ufffd\ufffd\u0544\ufffd\tK\u0010\ufffd\ufffdq\ufffd\ufffd\u0000\r\ufffd7C[\ufffd\ufffdn)H\ufffd\ufffd2\ufffd\ufffdf\ufffd\ufffd\u6f597\ufffd\t\ufffd\u0011\ufffd$\ufffdm6TB\ufffde\ufffd\ufffd\u0005\u0001\u0012\ufffdv\ufffdX\ufffd\ufffd\ufffd\n\ufffdB\ufffd\u05cb\ufffd\ufffd\ufffdh\ufffd\ufffd+\ufffd4 /O\ufffd6|h\ufffd\ufffd\ufffdB\u0014\ufffd\f\u001f:\ufffd-x\ufffdN(*\ufffdB\ufffd\ufffd8\u0019Oh\ufffdC\ufffd\u0003h~\ufffd\ufffd\ufffd(\ufffd<\u0012l\u05db>\ufffd3\u001e\ufffd\u001f\ufffd\ufffd\u0002<F\u05b0\ufffd;\\\ufffdey\ufffd\ufffd3HI\ufffd\ufffd\ufffd%\ufffdzA\ufffd\u0005\ufffds=\",\u0011$\ufffd|\ufffd\ufffd\ufffd\ufffd8*\ufffd&\ufffd\ufffd\ufffd\ufffd-\t\ufffd\ufffd\u001d\ufffd\u0004(g\ufffd\ufffd\ufffdtqp\u000b\ufffdM?\ufffd\u0004\ufffd\\\ufffd\ufffd\\\ufffd-\ufffd\ufffdmF\ufffdAQ\ufffdy\ufffd\ufffd\ufffda/\ufffdml]o\ufffd\ufffd\ufffd_\ufffd%\u001c\ufffd,\ufffd\ufffdhEjj\n\ufffd\ufffd\u001fCUg\ufffdKht\u0016r,6\ufffd\ufffdk\b\ufffd\ufffdn\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\u001b\ufffdk\ufffdr\ufffd\ufffd\ufffd\u06a8cE1\u0019\u001e\ufffd%\ufffd\ufffd\ufffd\ufffdv\ufffd\ufffdn\ufffd\ufffdr6\ufffdO\ufffd~\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd3TWU\ufffd\ufffd\ufffd2&&\ufffd\"\u0016df\ufffd^Z\u0012\ufffd\ufffd\u0230\ufffd\ufffd466\u001e1V.<\ufffd\u06f7\ufffd"
+  },
+  {
+    "route": "/static/js/index.dZusM_HY.js",
+    "status": 200,
+    "content_type": "application/javascript",
+    "content_length": "",
+    "location": "",
+    "sample": "const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=[\"./Table.CX-fA0hS.js\",\"./rolldown-runtime.C0FnF6B9.js\",\"./emotion-is-prop-valid.esm.CuYlOKOk.js\",\"./emotion-styled.browser.esm.BYv_Qzcq.js\",\"./protobuf.Ckf-kxfD.js\",\"./utils.Vs712G4Z.js\",\"./loglevel.xXLtmX_e.js\",\"./types.cZoyy9Y-.js\",\"./isArrayLike.Crw2F5li.js\",\"./isSymbol.CmW3dkoN.js\",\"./merge.CV9itYNj.js\",\"./toString.tRXNBxtF.js\",\"./_isIterateeCall.BUStsXAd.js\",\"./isArrayLikeObject.B3Zf3PTL.js\",\"./_baseClone.Bcnb-YL-.js\",\"./getColors.DtA"
+  }
+]

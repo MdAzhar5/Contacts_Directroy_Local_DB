@@ -1,0 +1,57 @@
+{
+  "input": "/home/ubuntu/upload/normalized_merged_all.csv",
+  "original_copy": "/home/ubuntu/contact_directory_desktop/data/normalized_merged_all_input_original.csv",
+  "output": "/home/ubuntu/contact_directory_desktop/data/normalized_merged_all.csv",
+  "input_headers_preserved_in_original_values": true,
+  "output_headers": [
+    "Name",
+    "First Name",
+    "Last Name",
+    "Email",
+    "Address Line 1",
+    "Address Line 2",
+    "City",
+    "State",
+    "Postal Code",
+    "Country",
+    "Phone",
+    "Fax",
+    "Website",
+    "Industry",
+    "Original Industry",
+    "Category",
+    "Alternate Categories",
+    "Credentials",
+    "Specialty",
+    "Rating",
+    "Reviews",
+    "NPI",
+    "Enumeration Date",
+    "Original Values",
+    "source_file",
+    "source_type",
+    "source_sheet",
+    "source_category"
+  ],
+  "counts": {
+    "rows": 279522,
+    "source_type:Med": 208022,
+    "source_type:Not Med": 71500,
+    "blank_name": 4
+  },
+  "phone_changes": {
+    "valid_canonical": 278627,
+    "invalid_or_non_10_digit_cleared": 894,
+    "canonicalized": 170984
+  },
+  "safe_equivalent_mappings": {
+    "Address / street_address / Street Address / First Line Address": "Address Line 1",
+    "Second Line Address": "Address Line 2",
+    "ZIP / Zip / ZIP Code / postcode / postal_code": "Postal Code",
+    "State / Sate / State-Provision / Region": "State",
+    "First Name + Last Name": "Name when source Name is absent",
+    "source_category": "source_category",
+    "source_type": "controlled Med or Not Med derived from source_category; original value retained in Original Values"
+  },
+  "phone_rule": "remove non-digits; remove leading 1 from 11-digit values; store only exactly 10 digits; invalid values become blank and remain in Original Values"
+}
