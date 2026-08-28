@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 import re
 import tempfile
@@ -12,6 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from openpyxl import Workbook
 
+import clearout_client
 import db
 from importers import iter_rows, preview_file, supported_file
 from dnc_client import DEFAULT_DNC_URL, DNCServiceError, check_service, clean_with_hosted_service
@@ -271,6 +273,8 @@ class ContactDirectoryDesktop(tk.Tk):
         self.filter_run_hosted = tk.BooleanVar(value=False)
         self.filter_scrub_tcpa = tk.BooleanVar(value=True)
         self.dnc_url_var = tk.StringVar(value=DEFAULT_DNC_URL)
+        self.clearout_token_var = tk.StringVar(value=os.environ.get("CLEAROUT_API_TOKEN", ""))
+        self.clearout_country_var = tk.StringVar(value="us")
         top = ttk.LabelFrame(self.filter_tab, text="1. Select file", padding=10)
         top.pack(fill="x", pady=(0, 10))
         ttk.Entry(top, textvariable=self.filter_file_var, width=80, state="readonly").grid(row=0, column=0, sticky="ew", padx=5, pady=5)
@@ -302,7 +306,16 @@ class ContactDirectoryDesktop(tk.Tk):
         self.dnc_service_status.grid(row=2, column=1, columnspan=3, sticky="w", padx=5, pady=4)
         hosted.columnconfigure(3, weight=1)
 
-        self.filter_preview_frame = ttk.LabelFrame(self.filter_tab, text="4. Preview", padding=8)
+        clearout = ttk.LabelFrame(self.filter_tab, text="4. Clearout phone validation (optional)", padding=10)
+        clearout.pack(fill="x", pady=(0, 10))
+        ttk.Label(clearout, text="API token").grid(row=0, column=0, sticky="w", padx=5, pady=4)
+        ttk.Entry(clearout, textvariable=self.clearout_token_var, width=40, show="*").grid(row=0, column=1, sticky="ew", padx=5, pady=4)
+        ttk.Label(clearout, text="Country code").grid(row=0, column=2, sticky="e", padx=5, pady=4)
+        ttk.Entry(clearout, textvariable=self.clearout_country_var, width=8).grid(row=0, column=3, sticky="w", padx=5, pady=4)
+        ttk.Label(clearout, text="After filtering, use the \"Send to Clearout\" button in the completion dialog to upload the output file directly for bulk phone validation.", foreground="#687783").grid(row=1, column=0, columnspan=4, sticky="w", padx=5, pady=(4, 0))
+        clearout.columnconfigure(1, weight=1)
+
+        self.filter_preview_frame = ttk.LabelFrame(self.filter_tab, text="5. Preview", padding=8)
         self.filter_preview_frame.pack(fill="both", expand=True)
         ttk.Label(self.filter_preview_frame, text="The preview will appear after selecting a file.").pack(anchor="w")
 
@@ -651,6 +664,12 @@ class ContactDirectoryDesktop(tk.Tk):
         row = 1
         ttk.Button(body, text="Open output file", command=lambda: self._open_path(output_path)).grid(row=row, column=0, sticky="w", padx=(0, 6))
         ttk.Button(body, text="Open containing folder", command=lambda: self._open_path(Path(output_path).parent)).grid(row=row, column=1, sticky="w", padx=(0, 6))
+        clearout_button = ttk.Button(body, text="Send to Clearout", style="Accent.TButton")
+        clearout_button.grid(row=row, column=2, sticky="w", padx=(0, 6))
+        row += 1
+        clearout_status = ttk.Label(body, text="", foreground="#687783", wraplength=440, justify="left")
+        clearout_status.grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        clearout_button.configure(command=lambda: self._send_to_clearout(output_path, clearout_button, clearout_status))
         row += 1
         if dnc_removed_path:
             ttk.Label(body, text="Rows removed by the hosted DNC/TCPA pass were saved separately:").grid(row=row, column=0, columnspan=3, sticky="w", pady=(10, 2))
@@ -676,14 +695,46 @@ class ContactDirectoryDesktop(tk.Tk):
         for row in db.recent_imports(100):
             self.history_tree.insert("", "end", values=[row[col] for col in ["original_filename", "uploaded_at", "source", "industry", "source_type", "source_category", "category", "imported_at", "rows_imported", "rows_failed"]])
 
-    def _run_background(self, function, callback):
+    def _run_background(self, function, callback, on_error=None):
         def worker():
             try:
                 result = function()
                 self.after(0, lambda: callback(result))
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Operation failed", str(exc)))
+                if on_error:
+                    self.after(0, lambda: on_error(exc))
+                else:
+                    self.after(0, lambda: messagebox.showerror("Operation failed", str(exc)))
         threading.Thread(target=worker, daemon=True).start()
+
+    def _send_to_clearout(self, output_path, button, status_label):
+        token = self.clearout_token_var.get().strip()
+        if not token:
+            messagebox.showerror("Send to Clearout", "Enter a Clearout API token in the Filter File tab first.")
+            return
+        country_code = self.clearout_country_var.get().strip() or "us"
+        button.state(["disabled"])
+        status_label.config(text="Sending output file to Clearout…", foreground="#687783")
+
+        def finished(result):
+            button.state(["!disabled"])
+            list_id = (result.get("data") or {}).get("list_id", "")
+            status_label.config(
+                text=f"Clearout accepted the file (list ID: {list_id})." if list_id else "Clearout responded.",
+                foreground="#1d7a46",
+            )
+            messagebox.showinfo("Clearout response", json.dumps(result, indent=2))
+
+        def failed(exc):
+            button.state(["!disabled"])
+            status_label.config(text="Clearout request failed.", foreground="#a23b3b")
+            messagebox.showerror("Send to Clearout", str(exc))
+
+        self._run_background(
+            lambda: clearout_client.send_bulk_validation(output_path, token, country_code=country_code),
+            finished,
+            failed,
+        )
 
 
 if __name__ == "__main__":
