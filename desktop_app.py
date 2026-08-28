@@ -274,7 +274,6 @@ class ContactDirectoryDesktop(tk.Tk):
         self.filter_scrub_tcpa = tk.BooleanVar(value=True)
         self.dnc_url_var = tk.StringVar(value=DEFAULT_DNC_URL)
         self.clearout_token_var = tk.StringVar(value=os.environ.get("CLEAROUT_API_TOKEN", ""))
-        self.clearout_country_var = tk.StringVar(value="us")
         top = ttk.LabelFrame(self.filter_tab, text="1. Select file", padding=10)
         top.pack(fill="x", pady=(0, 10))
         ttk.Entry(top, textvariable=self.filter_file_var, width=80, state="readonly").grid(row=0, column=0, sticky="ew", padx=5, pady=5)
@@ -310,9 +309,7 @@ class ContactDirectoryDesktop(tk.Tk):
         clearout.pack(fill="x", pady=(0, 10))
         ttk.Label(clearout, text="API token").grid(row=0, column=0, sticky="w", padx=5, pady=4)
         ttk.Entry(clearout, textvariable=self.clearout_token_var, width=40, show="*").grid(row=0, column=1, sticky="ew", padx=5, pady=4)
-        ttk.Label(clearout, text="Country code").grid(row=0, column=2, sticky="e", padx=5, pady=4)
-        ttk.Entry(clearout, textvariable=self.clearout_country_var, width=8).grid(row=0, column=3, sticky="w", padx=5, pady=4)
-        ttk.Label(clearout, text="After filtering, use the \"Send to Clearout\" button in the completion dialog to upload the output file directly for bulk phone validation.", foreground="#687783").grid(row=1, column=0, columnspan=4, sticky="w", padx=5, pady=(4, 0))
+        ttk.Label(clearout, text="After filtering, use the \"Send to Clearout\" button in the completion dialog to upload the output file directly for bulk phone validation. The US/UK country code is detected automatically from the phone numbers.", foreground="#687783").grid(row=1, column=0, columnspan=4, sticky="w", padx=5, pady=(4, 0))
         clearout.columnconfigure(1, weight=1)
 
         self.filter_preview_frame = ttk.LabelFrame(self.filter_tab, text="5. Preview", padding=8)
@@ -712,7 +709,6 @@ class ContactDirectoryDesktop(tk.Tk):
         if not token:
             messagebox.showerror("Send to Clearout", "Enter a Clearout API token in the Filter File tab first.")
             return
-        country_code = self.clearout_country_var.get().strip() or "us"
         button.state(["disabled"])
         status_label.config(text="Sending output file to Clearout…", foreground="#687783")
 
@@ -730,11 +726,11 @@ class ContactDirectoryDesktop(tk.Tk):
             status_label.config(text="Clearout request failed.", foreground="#a23b3b")
             messagebox.showerror("Send to Clearout", str(exc))
 
-        self._run_background(
-            lambda: clearout_client.send_bulk_validation(output_path, token, country_code=country_code),
-            finished,
-            failed,
-        )
+        def send():
+            country_code = clearout_client.guess_country_code(output_path)
+            return clearout_client.send_bulk_validation(output_path, token, country_code=country_code)
+
+        self._run_background(send, finished, failed)
 
 
 if __name__ == "__main__":
