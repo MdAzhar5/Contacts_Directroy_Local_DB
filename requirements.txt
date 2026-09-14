@@ -1,6 +1,2 @@
-pandas>=2.0
-openpyxl>=3.1
-requests>=2.31
-playwright>=1.50
-pyinstaller>=6.0
-requests
+duckdb>=1.2
+pywebview>=5.0

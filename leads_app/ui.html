@@ -1,0 +1,811 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Leads Explorer</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --border: #dfe3e8; --text: #1f2933; --muted: #6b7280;
+    --accent: #2563eb; --accent-2: #1d4ed8; --ok: #059669; --warn: #b45309; --chip: #eef2ff; --used: #9ca3af;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.45 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 16px; margin: 0; }
+  header .total { color: var(--muted); margin-left: auto; text-align: right; font-size: 12px; }
+  nav.tabs { display: flex; gap: 2px; }
+  nav.tabs button { border: 1px solid transparent; background: none; padding: 6px 12px; border-radius: 6px; font-weight: 600; color: var(--muted); }
+  nav.tabs button.active { background: var(--chip); color: var(--accent); border-color: #c7d2fe; }
+  main.tab { display: none; flex: 1; min-height: 0; width: 100vw; overflow: hidden; }
+  main.tab.active { display: grid; grid-template-columns: 340px minmax(0, 1fr); }
+  main.tab.single.active { display: block; overflow-y: auto; padding: 16px; }
+  aside { background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+  section { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: var(--panel); }
+  section h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); display: flex; justify-content: space-between; }
+  section h3 a { font-weight: normal; text-transform: none; letter-spacing: 0; color: var(--accent); cursor: pointer; }
+  input[type=text], input[type=search], select { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; font: inherit; background: #fff; }
+  .list { max-height: 180px; overflow-y: auto; margin-top: 6px; border: 1px solid var(--border); border-radius: 4px; }
+  .list label { display: flex; align-items: center; gap: 6px; padding: 3px 8px; cursor: pointer; white-space: nowrap; overflow: hidden; }
+  .list label:hover { background: #f8fafc; }
+  .list label span.n { margin-left: auto; color: var(--muted); font-size: 11px; }
+  .list label span.v { overflow: hidden; text-overflow: ellipsis; }
+  .list label span.sub { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+  .checks label { display: block; padding: 2px 0; cursor: pointer; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .chip { background: var(--chip); border-radius: 12px; padding: 2px 8px; font-size: 12px; display: inline-flex; gap: 6px; align-items: center; max-width: 100%; }
+  .chip b { cursor: pointer; color: var(--muted); }
+  .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .content { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+  .toolbar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .stat { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; min-width: 110px; }
+  .stat .k { font-size: 11px; color: var(--muted); }
+  .stat .v { font-size: 18px; font-weight: 600; }
+  .stat .s { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent-2); font-weight: 600; }
+  button.primary:hover { background: var(--accent-2); }
+  button.small { padding: 5px 10px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .spacer { flex: 1; }
+  .tablewrap { flex: 1; overflow: auto; width: 100%; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+  th { position: sticky; top: 0; background: #f8fafc; z-index: 1; font-weight: 600; }
+  tr:hover td { background: #f8fafc; }
+  td.closed { color: #b91c1c; }
+  td.src { color: var(--muted); font-size: 11px; }
+  td.usedcell { color: var(--used); font-size: 11px; }
+  .pager { display: flex; gap: 8px; align-items: center; padding: 8px 16px; background: var(--panel); border-top: 1px solid var(--border); color: var(--muted); }
+  .toast { position: fixed; bottom: 18px; right: 18px; background: #111827; color: #fff; padding: 10px 14px; border-radius: 6px; max-width: 520px; display: none; z-index: 30; white-space: pre-line; }
+  .toast.ok { background: var(--ok); }
+  .busy { color: var(--muted); font-style: italic; }
+  /* forms (import / filter) */
+  .page { max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .card h2 { margin: 0 0 8px; font-size: 14px; }
+  .card p.hint { margin: 0 0 10px; color: var(--muted); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .row .grow { flex: 1; min-width: 200px; }
+  .path { font-family: Consolas, monospace; font-size: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 14px; }
+  .grid5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px 14px; }
+  .field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+  .field .addnew { display: flex; gap: 4px; margin-top: 4px; }
+  .field .addnew input { flex: 1; }
+  .req::after { content: " *"; color: #b91c1c; }
+  .preview { max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 4px; }
+  .result { background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 6px; padding: 10px 12px; margin-top: 10px; display: none; white-space: pre-line; }
+  .result.err { background: #fef2f2; border-color: #fecaca; }
+  .modal { position: fixed; inset: 0; background: rgba(17,24,39,.45); display: none; align-items: center; justify-content: center; z-index: 20; }
+  .modal .box { background: var(--panel); border-radius: 8px; padding: 18px 20px; width: 520px; max-width: 95vw; display: flex; flex-direction: column; gap: 10px; }
+  .modal h2 { margin: 0; font-size: 15px; }
+  .muted { color: var(--muted); }
+  input[type=radio], input[type=checkbox] { accent-color: var(--accent); }
+  .tree label { padding: 2px 8px 2px 6px; }
+  .tree b.tg { width: 14px; flex: none; text-align: center; cursor: pointer; color: var(--muted); font-weight: normal; user-select: none; }
+  .tree label.implied { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Leads Explorer</h1>
+  <nav class="tabs">
+    <button data-tab="leads" class="active">All Leads</button>
+    <button data-tab="used">Used Data</button>
+    <button data-tab="import">Import &amp; Map</button>
+    <button data-tab="filter">Filter File</button>
+    <button data-tab="history">History</button>
+    <button data-tab="updates">Updates<span id="updDot" style="display:none;color:#b45309"> ●</span></button>
+  </nav>
+  <span class="total" id="total">Loading database…</span>
+</header>
+
+<!-- ===================================================== ALL LEADS -->
+<main id="tab-leads" class="tab active">
+  <aside>
+    <section>
+      <h3>Usage</h3>
+      <div class="checks">
+        <label><input type="radio" name="usage" value="unused" checked> Unused only</label>
+        <label><input type="radio" name="usage" value="all"> All leads</label>
+        <label><input type="radio" name="usage" value="used"> Used only</label>
+      </div>
+    </section>
+    <section>
+      <h3>Source <a onclick="clearSel('sources')">clear</a></h3>
+      <div class="list" id="sources" style="max-height:100px"></div>
+    </section>
+    <section>
+      <h3>Industry <a onclick="clearSel('tree')">clear</a></h3>
+      <input type="search" id="treeSearch" placeholder="Search sub-industries, e.g. dentist, plumber, pizza">
+      <div class="list tree" id="tree" style="max-height:280px"></div>
+      <div class="chips" id="treeChips"></div>
+      <div class="muted" style="font-size:11px;margin-top:5px">Tick a main industry to take everything under it, or click ▸ to open it and tick specific sub-industries.</div>
+    </section>
+    <section>
+      <h3>Country</h3>
+      <div class="list" id="countries" style="max-height:60px"></div>
+    </section>
+    <section>
+      <h3>State <a onclick="clearSel('states')">clear</a></h3>
+      <input type="search" id="stateSearch" placeholder="Filter states">
+      <div class="list" id="states"></div>
+    </section>
+    <section>
+      <h3>City <a onclick="clearSel('cities')">clear</a></h3>
+      <input type="search" id="citySearch" placeholder="Search cities (pick a state first to narrow)">
+      <div class="list" id="cities"></div>
+      <div class="chips" id="cityChips"></div>
+    </section>
+    <section>
+      <h3>Other</h3>
+      <input type="text" id="name" placeholder="Business name contains…">
+      <input type="text" id="zip" placeholder="ZIP starts with…" style="margin-top:6px">
+      <div class="checks" style="margin-top:6px">
+        <label><input type="checkbox" id="has_phone"> Has phone</label>
+        <label><input type="checkbox" id="has_email"> Has email</label>
+        <label><input type="checkbox" id="has_website"> Has website</label>
+        <label><input type="checkbox" id="has_facebook"> Has Facebook</label>
+        <label><input type="checkbox" id="open_only" checked> Only open businesses</label>
+      </div>
+    </section>
+    <button onclick="resetAll()">Reset all filters</button>
+  </aside>
+
+  <div class="content">
+    <div class="toolbar">
+      <div class="stat"><div class="k">Matching rows</div><div class="v" id="cTotal">–</div><div class="s" id="cBySrc"></div></div>
+      <div class="stat"><div class="k">With phone</div><div class="v" id="cPhone">–</div></div>
+      <div class="stat"><div class="k">With email</div><div class="v" id="cEmail">–</div></div>
+      <div class="stat"><div class="k">With website</div><div class="v" id="cWeb">–</div></div>
+      <div class="stat"><div class="k">With Facebook</div><div class="v" id="cFb">–</div></div>
+      <div class="spacer"></div>
+      <span id="status" class="busy"></span>
+      <button class="primary" id="exportBtn" onclick="doExport()">⬇ Download CSV</button>
+    </div>
+    <div class="tablewrap"><table id="grid"><thead></thead><tbody></tbody></table></div>
+    <div class="pager">
+      <button onclick="page(-1)" id="prevBtn">◀ Prev</button>
+      <span id="pageInfo">Preview</span>
+      <button onclick="page(1)" id="nextBtn">Next ▶</button>
+      <span class="spacer"></span>
+      <span>Preview shows 200 rows per page. Download CSV exports every matching row and does not mark anything as used.</span>
+    </div>
+  </div>
+</main>
+
+<!-- ===================================================== USED DATA -->
+<main id="tab-used" class="tab">
+  <aside>
+    <section>
+      <h3>Search</h3>
+      <input type="search" id="uq" placeholder="Name, email, phone, address, website, NPI…">
+      <div class="checks" style="margin-top:6px">
+        <label><input type="checkbox" id="u_has_phone"> Has phone</label>
+        <label><input type="checkbox" id="u_has_email"> Has email</label>
+      </div>
+    </section>
+    <section><h3>Source <a onclick="clearSel('u_source')">clear</a></h3><div class="list" id="u_source" style="max-height:120px"></div></section>
+    <section><h3>Source type <a onclick="clearSel('u_source_type')">clear</a></h3><div class="list" id="u_source_type" style="max-height:70px"></div></section>
+    <section><h3>Source category <a onclick="clearSel('u_source_category')">clear</a></h3><div class="list" id="u_source_category" style="max-height:80px"></div></section>
+    <section><h3>Industry <a onclick="clearSel('u_industry')">clear</a></h3><div class="list" id="u_industry"></div></section>
+    <section><h3>Category <a onclick="clearSel('u_category')">clear</a></h3><div class="list" id="u_category"></div></section>
+    <section><h3>Country <a onclick="clearSel('u_country')">clear</a></h3><div class="list" id="u_country" style="max-height:70px"></div></section>
+    <section><h3>State <a onclick="clearSel('u_state')">clear</a></h3><div class="list" id="u_state"></div></section>
+    <section>
+      <h3>City <a onclick="clearSel('u_city')">clear</a></h3>
+      <input type="search" id="ucitySearch" placeholder="Search cities">
+      <div class="list" id="u_city"></div>
+    </section>
+    <section><h3>Source file <a onclick="clearSel('u_source_file')">clear</a></h3><div class="list" id="u_source_file"></div></section>
+    <button onclick="usedReset()">Reset all filters</button>
+  </aside>
+  <div class="content">
+    <div class="toolbar">
+      <div class="stat"><div class="k">Matching contacts</div><div class="v" id="uTotal">–</div></div>
+      <div class="stat"><div class="k">With phone</div><div class="v" id="uPhone">–</div></div>
+      <div class="stat"><div class="k">With email</div><div class="v" id="uEmail">–</div></div>
+      <div class="spacer"></div>
+      <span id="ustatus" class="busy"></span>
+      <button id="uExcelBtn" onclick="usedExport('xlsx')">Download Excel</button>
+      <button class="primary" id="uCsvBtn" onclick="usedExport('csv')">⬇ Download CSV</button>
+    </div>
+    <div class="tablewrap"><table id="ugrid"><thead></thead><tbody></tbody></table></div>
+    <div class="pager">
+      <button onclick="upage(-1)" id="uprevBtn">◀ Prev</button>
+      <span id="upageInfo">Preview</span>
+      <button onclick="upage(1)" id="unextBtn">Next ▶</button>
+      <span class="spacer"></span>
+      <span>Newest first. Downloads include all 27 contact fields.</span>
+    </div>
+  </div>
+</main>
+
+<!-- ===================================================== IMPORT & MAP -->
+<main id="tab-import" class="tab single">
+  <div class="page">
+    <div class="card">
+      <h2>1. File</h2>
+      <p class="hint">CSV or XLSX. Every imported row is added to Used Data, and any lead in All Leads with the same phone or email is marked as used.</p>
+      <div class="row">
+        <div class="path grow" id="impPath">No file selected</div>
+        <button onclick="impBrowse()">Browse…</button>
+        <label>Sheet <select id="impSheet" style="width:180px" onchange="impSheetChange()" disabled></select></label>
+      </div>
+      <div class="muted" id="impInfo" style="margin-top:6px"></div>
+    </div>
+    <div class="card">
+      <h2>2. Controlled metadata</h2>
+      <p class="hint">These values are applied to every row of this import. Pick an existing value, or type a new one and click Add.</p>
+      <div class="grid5" id="impCatalogs"></div>
+    </div>
+    <div class="card">
+      <h2>3. Map columns</h2>
+      <p class="hint">Phones are stored as 10 digits (leading 1 removed; anything else becomes blank). Emails are lowercased. The full original row is kept in raw_data.</p>
+      <div class="grid4" id="impMapping"><span class="muted">Choose a file first.</span></div>
+    </div>
+    <div class="card">
+      <h2>4. Preview and import</h2>
+      <div class="preview" id="impPreview"><div class="muted" style="padding:10px">Choose a file to see the first rows.</div></div>
+      <div class="row" style="margin-top:10px">
+        <span class="muted">Rows whose phone <b>and</b> email both already exist in Used Data are skipped automatically; a row with only one match is kept.</span>
+        <label><input type="checkbox" id="impSkipExisting"> Stricter: also skip when only the phone or only the email already exists</label>
+        <label><input type="checkbox" id="impSkipBlank"> Skip rows with neither phone nor email</label>
+        <span class="spacer"></span>
+        <span id="impStatus" class="busy"></span>
+        <button class="primary" id="impRunBtn" onclick="impRun()" disabled>Import into Used Data</button>
+      </div>
+      <div class="result" id="impResult"></div>
+    </div>
+  </div>
+</main>
+
+<!-- ===================================================== FILTER FILE -->
+<main id="tab-filter" class="tab single">
+  <div class="page">
+    <div class="card">
+      <h2>1. File to clean</h2>
+      <p class="hint">Rows whose phone or email already exists in Used Data are removed. Phones in the output are rewritten to 10 digits. Nothing is written to the database.</p>
+      <div class="row">
+        <div class="path grow" id="fltPath">No file selected</div>
+        <button onclick="fltBrowse()">Browse…</button>
+        <label>Sheet <select id="fltSheet" style="width:180px" onchange="fltSheetChange()" disabled></select></label>
+      </div>
+      <div class="muted" id="fltInfo" style="margin-top:6px"></div>
+    </div>
+    <div class="card">
+      <h2>2. Match rules</h2>
+      <div class="grid4">
+        <div class="field"><label><input type="checkbox" id="fltMatchPhone" checked> Match by phone</label><select id="fltPhoneCol" disabled></select></div>
+        <div class="field"><label><input type="checkbox" id="fltMatchEmail" checked> Match by email</label><select id="fltEmailCol" disabled></select></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <span class="spacer"></span>
+        <span id="fltStatus" class="busy"></span>
+        <button class="primary" id="fltRunBtn" onclick="fltRun()" disabled>Compare and create clean CSV</button>
+      </div>
+      <div class="result" id="fltResult"></div>
+      <div class="row" id="fltOpen" style="display:none;margin-top:8px">
+        <button class="small" onclick="openPath(fltOut)">Open output file</button>
+        <button class="small" onclick="openPath(fltOutDir)">Open containing folder</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>3. Preview</h2>
+      <div class="preview" id="fltPreview"><div class="muted" style="padding:10px">Choose a file to see the first rows.</div></div>
+    </div>
+  </div>
+</main>
+
+<!-- ===================================================== HISTORY -->
+<main id="tab-history" class="tab single">
+  <div class="page">
+    <div class="card">
+      <div class="row"><h2 style="margin:0">Imports, exports and filter runs</h2><span class="spacer"></span><button class="small" onclick="loadHistory()">Refresh</button></div>
+      <div class="preview" style="max-height:none;margin-top:10px"><table id="hgrid"><thead></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+</main>
+
+<!-- ===================================================== UPDATES -->
+<main id="tab-updates" class="tab single">
+  <div class="page">
+    <div class="card">
+      <div class="row">
+        <h2 style="margin:0">Data updates</h2>
+        <span class="muted" id="updNote"></span>
+        <span class="spacer"></span>
+        <button class="small" id="updCheckBtn" onclick="loadUpdates(true)">Check now</button>
+      </div>
+      <p class="hint" style="margin-top:8px">Foursquare, Overture and OpenStreetMap publish new releases regularly. The app checks once a day when it starts. A newer release can be downloaded and merged into All Leads: new businesses are added, changed ones updated, nothing is duplicated, and your Used Data marks are kept.</p>
+      <div class="preview" style="max-height:none"><table id="updGrid"><thead><tr><th>Source</th><th>Installed</th><th>Last updated</th><th>Latest available</th><th>Download</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>How an update runs</h2>
+      <ol style="margin:0;padding-left:20px;line-height:1.8">
+        <li>Click <b>Download &amp; install</b>. The updater opens in its own console window and this app closes so the database is free.</li>
+        <li>The release is downloaded into <code>data\</code> (10 to 12 GB, resumable), then USA contacts are extracted and normalized.</li>
+        <li>Rows are matched by source id: new ones inserted, changed ones updated, unchanged ones untouched. Leads whose phone or email is in Used Data are marked used.</li>
+        <li>Filter tables are rebuilt, the raw download is deleted, and the app starts again. The run appears in History as kind "update".</li>
+      </ol>
+      <p class="hint" style="margin:10px 0 0">Foursquare needs a Hugging Face token in the git-ignored <code>.env</code> file (copy <code>.env.example</code> and set <code>HF_TOKEN</code>). Overture and OpenStreetMap need no credentials. To be told about new releases without opening the app, run <code>pipeline\install_daily_check.bat</code> once.</p>
+    </div>
+  </div>
+</main>
+
+<!-- update confirm modal -->
+<div class="modal" id="updModal">
+  <div class="box">
+    <h2 id="updTitle">Download and install?</h2>
+    <div id="updText" style="white-space:pre-line"></div>
+    <div class="row"><span class="spacer"></span><button onclick="$('updModal').style.display='none'">Cancel</button><button class="primary" id="updGo">Download &amp; install</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const api = () => pywebview.api;
+const fmt = n => n == null ? '–' : Number(n).toLocaleString();
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const USED_FACETS = ['source','source_type','source_category','industry','category','state','city','country','source_file'];
+const MAPPING_FIELDS = [['name','Name / Business name'],['first_name','First name'],['last_name','Last name'],['email','Email'],['phone','Phone'],
+  ['address_line_1','Address line 1'],['address_line_2','Address line 2'],['city','City'],['state','State'],['postal_code','Postal / ZIP code'],
+  ['country','Country'],['fax','Fax'],['website','Website'],['original_industry','Original industry'],['alternate_categories','Alternate categories'],
+  ['credentials','Credentials'],['specialty','Specialty'],['rating','Rating'],['reviews','Reviews'],['npi','NPI'],['enumeration_date','Enumeration date']];
+const CATALOGS = [['source','Source',true],['industry','Industry',true],['source_type','Source type',true],['source_category','Source category',true],['category','Category',false]];
+
+// selections: All Leads keys + Used Data keys prefixed u_
+const sel = { sources: new Set(), tree: new Set(), states: new Set(), cities: new Set(), countries: new Set() };
+USED_FACETS.forEach(f => sel['u_' + f] = new Set());
+const labels = { tree: {}, cities: {}, categories: {} };
+let offset = 0, lastCount = 0, timer = null, ready = false, allStates = [], allSources = [], options = {};
+let uOffset = 0, uLastCount = 0, uTimer = null;
+
+// ---------------------------------------------------------------- tabs
+document.querySelectorAll('nav.tabs button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+function showTab(name) {
+  document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('main.tab').forEach(m => m.classList.toggle('active', m.id === 'tab-' + name));
+  if (name === 'used' && !usedLoaded) { usedLoaded = true; usedRefresh(); }
+  if (name === 'history') loadHistory();
+  if (name === 'import') loadCatalogs();
+  if (name === 'updates') loadUpdates(false);
+}
+
+// ================================================================ DATA UPDATES
+let updState = null;
+function renderUpdates(st) {
+  updState = st;
+  const tbody = $('updGrid').querySelector('tbody');
+  tbody.innerHTML = st.results.map(r => {
+    const status = r.error ? `<span style="color:#b91c1c" title="${esc(r.error)}">check failed: ${esc(r.error.slice(0, 90))}</span>`
+      : r.available ? '<b style="color:var(--warn)">new release available</b>' : (r.version ? 'up to date' : 'not checked yet');
+    const btn = r.available ? `<button class="small primary" onclick="askUpdate('${esc(r.source)}')">Download &amp; install</button>` : '';
+    return `<tr><td><b>${esc(r.source)}</b></td><td>${esc(r.installed || 'not recorded')}</td><td>${esc(r.updated_at ? r.updated_at.slice(0, 10) : '')}</td>` +
+      `<td>${esc(r.version || '')}<span class="muted"> ${esc(r.note || '')}</span></td><td>${esc(r.size_text)}</td><td>${status}</td><td>${btn}</td></tr>`;
+  }).join('');
+  $('updNote').textContent = st.checked_at ? `Last checked ${st.checked_at.replace('T', ' ').slice(0, 16)} UTC` : 'Not checked yet';
+  $('updDot').style.display = st.available.length ? '' : 'none';
+}
+async function loadUpdates(force) {
+  if (!force && updState && !updState.stale) { renderUpdates(updState); return; }
+  $('updCheckBtn').disabled = true;
+  try {
+    let st = await api().updates_status();
+    renderUpdates(st);
+    if (force || st.stale) { $('updNote').textContent = 'Checking online…'; st = await api().check_updates(); renderUpdates(st); }
+  } catch (e) { toast('Update check failed: ' + e); }
+  $('updCheckBtn').disabled = false;
+}
+function askUpdate(source) {
+  const r = updState.results.find(x => x.source === source);
+  $('updTitle').textContent = `Update ${source} to ${r.version}?`;
+  $('updText').textContent = `This downloads ${r.size_text || 'the release'} (${r.note || ''}), extracts USA contacts and merges them into All Leads.\n\nLeads Explorer will close while the updater runs in a separate window, then start again automatically. Keep the computer on; the download can take a while and resumes if interrupted.`;
+  $('updGo').onclick = async () => {
+    $('updModal').style.display = 'none';
+    const res = await api().start_update(source);
+    if (res.ok) toast('Updater started in a new window. Leads Explorer is closing…', true); else toast(res.message);
+  };
+  $('updModal').style.display = 'flex';
+}
+
+// ---------------------------------------------------------------- shared list rendering
+function renderList(id, items, key, labelFn) {
+  const el = $(id);
+  const seen = new Set(items.map(it => it.v));
+  const extra = [...sel[key]].filter(v => !seen.has(v)).map(v => ({ v, n: null, label: labels[key] ? labels[key][v] : v }));
+  el.innerHTML = extra.concat(items).map(it => {
+    const checked = sel[key].has(it.v) ? 'checked' : '';
+    const full = labelFn ? labelFn(it) : (it.label || it.v);
+    let main = full, sub = '';
+    if (key === 'categories' && full.includes(' > ')) {
+      const parts = full.split(' > ');
+      main = parts[parts.length - 1];
+      sub = parts.slice(0, -1).join(' > ');
+    }
+    return `<label title="${esc(full)}"><input type="checkbox" ${checked} data-key="${key}" data-v="${esc(it.v)}" data-label="${esc(main)}">
+            <span class="v">${esc(main)}</span>${sub ? `<span class="sub">${esc(sub)}</span>` : ''}<span class="n">${it.n == null ? '' : fmt(it.n)}</span></label>`;
+  }).join('') || '<div style="padding:6px 8px;color:var(--muted)">No matches</div>';
+}
+function renderChips(id, key) {
+  $(id).innerHTML = [...sel[key]].map(v => `<span class="chip"><span title="${esc(labels[key][v] || v)}">${esc(labels[key][v] || v)}</span><b data-key="${key}" data-v="${esc(v)}">✕</b></span>`).join('');
+}
+
+document.body.addEventListener('change', e => {
+  const t = e.target;
+  if (t.matches('input[type=checkbox][data-key]')) {
+    const key = t.dataset.key, v = t.dataset.v;
+    if (key === 'tree') { treeSelect(v, t.checked); return; }
+    if (t.checked) { sel[key].add(v); if (labels[key]) labels[key][v] = t.dataset.label; } else sel[key].delete(v);
+    if (key.startsWith('u_')) { uOffset = 0; usedSchedule(); return; }
+    if (key === 'sources') { loadTree(); loadStates(); loadCities(); }
+    if (key === 'states') loadCities();
+    if (key === 'cities') renderChips('cityChips', 'cities');
+    schedule();
+  } else if (t.closest('#tab-leads') && (t.matches('input[type=checkbox]') || t.matches('input[type=radio]') || t.matches('input[type=text]'))) {
+    schedule();
+  } else if (t.closest('#tab-used') && t.matches('input[type=checkbox]')) {
+    uOffset = 0; usedSchedule();
+  }
+});
+document.body.addEventListener('click', e => {
+  const t = e.target;
+  if (t.matches('.tree b.tg[data-p]')) {
+    e.preventDefault();
+    const p = t.dataset.p;
+    if (treeOpen.has(p)) treeOpen.delete(p); else treeOpen.add(p);
+    renderTree();
+    return;
+  }
+  if (t.matches('.chip b')) {
+    sel[t.dataset.key].delete(t.dataset.v);
+    if (t.dataset.key === 'tree') { renderChips('treeChips', 'tree'); renderTree(); }
+    if (t.dataset.key === 'cities') { renderChips('cityChips', 'cities'); loadCities(); }
+    schedule();
+  }
+});
+
+let dTimer = null;
+function debounce(fn) { clearTimeout(dTimer); dTimer = setTimeout(fn, 250); }
+function toast(msg, ok) {
+  const t = $('toast'); t.textContent = msg; t.className = 'toast' + (ok ? ' ok' : ''); t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 9000);
+}
+function previewTable(container, headers, rows) {
+  container.innerHTML = `<table><thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${
+    rows.map(r => `<tr>${r.map(v => `<td title="${esc(v)}">${esc(v)}</td>`).join('')}</tr>`).join('') || '<tr><td>(empty file)</td></tr>'}</tbody></table>`;
+}
+async function openPath(p) { const r = await api().open_path(p); if (!r.ok) toast(r.message); }
+async function refreshTotals() {
+  options = await api().get_options();
+  $('total').innerHTML = `<b>${fmt(options.total)}</b> leads · ${fmt(options.total - options.used)} unused · ${fmt(options.used)} used<br>` +
+    `<b>${fmt(options.used_contacts)}</b> contacts in Used Data · ` + options.sources.map(s => `${s.v} ${fmt(s.n)}`).join(' · ');
+  $('uExcelBtn').style.display = options.excel ? '' : 'none';
+}
+
+// ================================================================ ALL LEADS
+const srcList = () => [...sel.sources];
+function filters() {
+  return {
+    sources: srcList(), tree: [...sel.tree], states: [...sel.states],
+    cities: [...sel.cities], countries: [...sel.countries],
+    name: $('name').value, zip: $('zip').value,
+    has_phone: $('has_phone').checked, has_email: $('has_email').checked,
+    has_website: $('has_website').checked, has_facebook: $('has_facebook').checked,
+    open_only: $('open_only').checked,
+    usage: document.querySelector('input[name=usage]:checked').value,
+  };
+}
+['name', 'zip'].forEach(id => $(id).addEventListener('input', schedule));
+$('treeSearch').addEventListener('input', () => debounce(renderTree));
+$('citySearch').addEventListener('input', () => debounce(loadCities));
+$('stateSearch').addEventListener('input', renderStates);
+function schedule() { clearTimeout(timer); offset = 0; timer = setTimeout(refresh, 300); }
+
+function clearSel(key) {
+  sel[key].clear();
+  if (key.startsWith('u_')) { uOffset = 0; usedSchedule(); return; }
+  if (key === 'sources') { renderList('sources', allSources, 'sources'); loadTree(); loadStates(); loadCities(); }
+  if (key === 'tree') { renderChips('treeChips', 'tree'); renderTree(); }
+  if (key === 'states') { renderStates(); loadCities(); }
+  if (key === 'cities') { renderChips('cityChips', 'cities'); loadCities(); }
+  schedule();
+}
+function resetAll() {
+  ['sources','tree','states','cities','countries'].forEach(k => sel[k].clear());
+  ['name', 'zip', 'treeSearch', 'citySearch', 'stateSearch'].forEach(id => $(id).value = '');
+  ['has_phone', 'has_email', 'has_website', 'has_facebook'].forEach(id => $(id).checked = false);
+  $('open_only').checked = true;
+  document.querySelector('input[name=usage][value=unused]').checked = true;
+  renderList('sources', allSources, 'sources');
+  renderChips('treeChips', 'tree'); renderChips('cityChips', 'cities');
+  treeOpen.clear();
+  loadTree(); loadStates(); loadCities(); schedule();
+}
+
+async function init() {
+  await refreshTotals();
+  allSources = options.sources;
+  renderList('sources', allSources, 'sources');
+  renderList('countries', options.countries, 'countries');
+  ready = true;
+  await Promise.all([loadTree(), loadStates(), loadCities()]);
+  refresh();
+  setTimeout(() => loadUpdates(false), 1500);   // daily online check, off the critical path
+}
+
+// ---- industry tree: main industries at the top, ▸ opens sub-industries; a ticked parent covers its children
+const treeOpen = new Set();
+let treeCache = {};
+function treeAncestorSelected(path) {
+  const segs = path.split(' > ');
+  for (let i = 1; i < segs.length; i++) if (sel.tree.has(segs.slice(0, i).join(' > '))) return true;
+  return false;
+}
+function treeRow(it, depth, flat) {
+  const implied = treeAncestorSelected(it.v), checked = sel.tree.has(it.v);
+  const tg = (it.kids && !flat) ? `<b class="tg" data-p="${esc(it.v)}">${treeOpen.has(it.v) ? '▾' : '▸'}</b>` : '<b class="tg"></b>';
+  return `<label class="${implied ? 'implied' : ''}" style="padding-left:${6 + depth * 14}px" title="${esc(it.v)}">${tg}` +
+    `<input type="checkbox" ${checked || implied ? 'checked' : ''} ${implied ? 'disabled' : ''} data-key="tree" data-v="${esc(it.v)}" data-label="${esc(it.v)}">` +
+    `<span class="v">${esc(flat ? it.v : it.name)}</span><span class="n">${fmt(it.n)}</span></label>`;
+}
+async function treeChildren(parent) {
+  const k = parent || '';
+  if (!(k in treeCache)) treeCache[k] = await api().get_tree(parent || null, srcList(), '');
+  return treeCache[k];
+}
+async function treeLevel(parent, depth) {
+  let html = '';
+  for (const it of await treeChildren(parent)) {
+    html += treeRow(it, depth, false);
+    if (it.kids && treeOpen.has(it.v)) html += await treeLevel(it.v, depth + 1);
+  }
+  return html;
+}
+async function renderTree() {
+  const q = $('treeSearch').value.trim(), el = $('tree');
+  if (q) {
+    const items = await api().get_tree(null, srcList(), q);
+    el.innerHTML = items.map(it => treeRow(it, 0, true)).join('') || '<div style="padding:6px 8px;color:var(--muted)">No matches</div>';
+  } else {
+    el.innerHTML = (await treeLevel(null, 0)) || '<div style="padding:6px 8px;color:var(--muted)">No industries</div>';
+  }
+}
+function loadTree() { treeCache = {}; return renderTree(); }
+function treeSelect(v, checked) {
+  if (checked) {
+    sel.tree.add(v); labels.tree[v] = v;
+    for (const s of [...sel.tree]) if (s.startsWith(v + ' > ')) sel.tree.delete(s);   // parent now covers these
+  } else sel.tree.delete(v);
+  renderChips('treeChips', 'tree'); renderTree(); schedule();
+}
+async function loadStates() { allStates = await api().get_states(srcList()); renderStates(); }
+function renderStates() {
+  const q = $('stateSearch').value.toLowerCase();
+  renderList('states', allStates.filter(s => s.v.toLowerCase().includes(q)), 'states');
+}
+async function loadCities() { renderList('cities', await api().get_cities([...sel.states], $('citySearch').value, srcList()), 'cities', it => it.label); }
+
+async function refresh() {
+  if (!ready) return;
+  $('status').textContent = 'Querying…';
+  const f = filters();
+  const [c, p] = await Promise.all([api().count(f), api().preview(f, 200, offset)]);
+  lastCount = c.total;
+  $('cTotal').textContent = fmt(c.total); $('cPhone').textContent = fmt(c.phone);
+  $('cEmail').textContent = fmt(c.email); $('cWeb').textContent = fmt(c.website); $('cFb').textContent = fmt(c.facebook);
+  $('cBySrc').textContent = (c.by_source || []).map(s => `${s.v} ${fmt(s.n)}`).join(' · ');
+  const thead = $('grid').querySelector('thead'), tbody = $('grid').querySelector('tbody');
+  thead.innerHTML = '<tr>' + p.columns.map(c => `<th>${esc(c.replace(/_/g, ' '))}</th>`).join('') + '</tr>';
+  tbody.innerHTML = p.rows.map(r => '<tr>' + r.map((v, i) => {
+    const col = p.columns[i];
+    const cls = col === 'date_closed' && v ? 'closed' : col === 'source' ? 'src' : col === 'used_at' ? 'usedcell' : '';
+    const text = col === 'used_at' && v ? 'used ' + String(v).slice(0, 10) : v;
+    return `<td class="${cls}" title="${esc(v)}">${esc(text)}</td>`;
+  }).join('') + '</tr>').join('')
+    || '<tr><td colspan="12" style="padding:30px;text-align:center;color:var(--muted)">No rows match these filters</td></tr>';
+  const from = lastCount ? offset + 1 : 0, to = Math.min(offset + 200, lastCount);
+  $('pageInfo').textContent = `Rows ${fmt(from)}–${fmt(to)} of ${fmt(lastCount)}`;
+  $('prevBtn').disabled = offset === 0; $('nextBtn').disabled = to >= lastCount;
+  $('exportBtn').disabled = lastCount === 0;
+  $('status').textContent = '';
+}
+function page(dir) { offset = Math.max(0, offset + dir * 200); refresh(); }
+
+// plain export: nothing is marked as used (only imports feed Used Data)
+async function doExport() {
+  $('exportBtn').disabled = true; $('status').textContent = 'Writing CSV… (large exports can take a minute)';
+  try {
+    const r = await api().export_csv(filters());
+    if (r.ok) toast(`Saved ${fmt(r.rows)} rows (${(r.size / 1e6).toFixed(1)} MB) to ${r.path}`, true);
+    else toast(r.message);
+  } catch (e) { toast('Export failed: ' + e); }
+  $('exportBtn').disabled = false; $('status').textContent = '';
+}
+
+// ================================================================ USED DATA
+let usedLoaded = false;
+function usedFilters() {
+  const f = { q: $('uq').value, has_phone: $('u_has_phone').checked, has_email: $('u_has_email').checked };
+  USED_FACETS.forEach(k => f[k] = [...sel['u_' + k]]);
+  return f;
+}
+$('uq').addEventListener('input', () => { uOffset = 0; usedSchedule(); });
+$('ucitySearch').addEventListener('input', () => debounce(async () => {
+  renderList('u_city', await api().used_facet(usedFilters(), 'city', $('ucitySearch').value), 'u_city');
+}));
+function usedSchedule() { clearTimeout(uTimer); uTimer = setTimeout(usedRefresh, 300); }
+function usedReset() {
+  USED_FACETS.forEach(k => sel['u_' + k].clear());
+  $('uq').value = ''; $('ucitySearch').value = ''; $('u_has_phone').checked = false; $('u_has_email').checked = false;
+  uOffset = 0; usedRefresh();
+}
+async function usedRefresh() {
+  $('ustatus').textContent = 'Querying…';
+  const f = usedFilters();
+  const [facets, c, p] = await Promise.all([api().used_facets(f), api().used_count(f), api().used_preview(f, 200, uOffset)]);
+  USED_FACETS.forEach(k => renderList('u_' + k, facets[k], 'u_' + k));
+  uLastCount = c.total;
+  $('uTotal').textContent = fmt(c.total); $('uPhone').textContent = fmt(c.phone); $('uEmail').textContent = fmt(c.email);
+  const thead = $('ugrid').querySelector('thead'), tbody = $('ugrid').querySelector('tbody');
+  thead.innerHTML = '<tr>' + p.columns.map(c => `<th>${esc(c.replace(/_/g, ' '))}</th>`).join('') + '</tr>';
+  tbody.innerHTML = p.rows.map(r => '<tr>' + r.map(v => `<td title="${esc(v)}">${esc(v)}</td>`).join('') + '</tr>').join('')
+    || '<tr><td colspan="14" style="padding:30px;text-align:center;color:var(--muted)">No contacts match these filters</td></tr>';
+  const from = uLastCount ? uOffset + 1 : 0, to = Math.min(uOffset + 200, uLastCount);
+  $('upageInfo').textContent = `Rows ${fmt(from)}–${fmt(to)} of ${fmt(uLastCount)}`;
+  $('uprevBtn').disabled = uOffset === 0; $('unextBtn').disabled = to >= uLastCount;
+  $('uCsvBtn').disabled = $('uExcelBtn').disabled = uLastCount === 0;
+  $('ustatus').textContent = '';
+}
+function upage(dir) { uOffset = Math.max(0, uOffset + dir * 200); usedRefresh(); }
+async function usedExport(fmtKind) {
+  $('ustatus').textContent = 'Writing file…';
+  try {
+    const r = await api().used_export(usedFilters(), fmtKind);
+    if (r.ok) toast(`Saved ${fmt(r.rows)} contacts (${(r.size / 1e6).toFixed(1)} MB) to ${r.path}`, true); else toast(r.message);
+  } catch (e) { toast('Export failed: ' + e); }
+  $('ustatus').textContent = '';
+}
+
+// ================================================================ CATALOGS (import metadata)
+let catalogs = null;
+async function loadCatalogs(keep) {
+  catalogs = await api().catalogs();
+  const current = keep ? Object.fromEntries(CATALOGS.map(([k]) => [k, ($('cat_' + k) || {}).value || ''])) : {};
+  $('impCatalogs').innerHTML = CATALOGS.map(([k, label, req]) => `
+    <div class="field"><label class="${req ? 'req' : ''}">${label}</label>
+      <select id="cat_${k}"><option value="">${req ? '— select —' : '— none —'}</option>${(catalogs[k] || []).map(v => `<option ${current[k] === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>
+      <div class="addnew"><input type="text" id="catnew_${k}" placeholder="New value…"><button class="small" onclick="addCatalog('${k}')">Add</button></div></div>`).join('');
+  if (!keep && impFile) suggestMeta();
+}
+async function addCatalog(kind) {
+  const v = $('catnew_' + kind).value.trim();
+  if (!v) { toast('Enter a value first.'); return; }
+  const r = await api().add_catalog(kind, v);
+  if (!r.ok) { toast(r.message); return; }
+  const remembered = Object.fromEntries(CATALOGS.map(([k]) => [k, $('cat_' + k).value]));
+  remembered[kind] = r.name;
+  await loadCatalogs(true);
+  Object.entries(remembered).forEach(([k, val]) => { if (val) $('cat_' + k).value = val; });
+}
+function suggestMeta() {
+  if (!impFile || !catalogs) return;
+  const ind = impFile.industry_default;
+  if (ind && !$('cat_industry').value) {
+    if ((catalogs.industry || []).includes(ind)) $('cat_industry').value = ind; else $('catnew_industry').value = ind;
+  }
+  if (!$('cat_source_type').value && (catalogs.source_type || []).includes('Not Med')) $('cat_source_type').value = 'Not Med';
+  $('cat_source_type').addEventListener('change', syncSourceCategory);
+  syncSourceCategory();
+}
+function syncSourceCategory() {
+  const st = $('cat_source_type').value, sc = $('cat_source_category');
+  const want = st === 'Med' ? 'medical' : st === 'Not Med' ? 'non_medical' : '';
+  if (want && [...sc.options].some(o => o.value === want)) sc.value = want;
+}
+
+// ================================================================ IMPORT & MAP
+let impFile = null;
+async function impBrowse() { const r = await api().open_file(); if (!r.ok) { toast(r.message); return; } impLoad(r); }
+async function impSheetChange() { const r = await api().file_info(impFile.path, $('impSheet').value); if (!r.ok) { toast(r.message); return; } impLoad(r); }
+function fileInfoLine(r) {
+  return `${fmt(r.rows)} rows · ${r.headers.length} columns` + (r.sheets.length ? ` · sheet "${r.sheet}"` : r.encoding ? ` · ${r.encoding}` : '') + (r.lenient ? ' · some malformed lines were skipped' : '');
+}
+function fillSheets(selectEl, r) {
+  selectEl.innerHTML = r.sheets.map(s => `<option ${s === r.sheet ? 'selected' : ''}>${esc(s)}</option>`).join('');
+  selectEl.disabled = r.sheets.length < 2;
+}
+function impLoad(r) {
+  impFile = r;
+  $('impPath').textContent = r.path; $('impInfo').textContent = fileInfoLine(r);
+  fillSheets($('impSheet'), r);
+  $('impMapping').innerHTML = MAPPING_FIELDS.map(([f, label]) => `
+    <div class="field"><label>${label}</label>
+      <select id="map_${f}"><option value="">— not mapped —</option>${r.headers.map(h => `<option ${r.mapping[f] === h ? 'selected' : ''}>${esc(h)}</option>`).join('')}</select></div>`).join('');
+  previewTable($('impPreview'), r.headers, r.sample);
+  $('impRunBtn').disabled = false; $('impResult').style.display = 'none';
+  if (catalogs) suggestMeta(); else loadCatalogs();
+}
+async function impRun() {
+  if (!impFile) return;
+  const mapping = Object.fromEntries(MAPPING_FIELDS.map(([f]) => [f, $('map_' + f).value]));
+  const meta = Object.fromEntries(CATALOGS.map(([k]) => [k, $('cat_' + k).value]));
+  const missing = CATALOGS.filter(([k, , req]) => req && !meta[k]).map(([, l]) => l);
+  if (missing.length) { toast('Please select or add: ' + missing.join(', ')); return; }
+  if (!['name','first_name','last_name','email','phone'].some(f => mapping[f])) { toast('Map at least one identifier: Name, First/Last name, Email, or Phone.'); return; }
+  const opts = { skip_existing: $('impSkipExisting').checked, skip_blank: $('impSkipBlank').checked };
+  $('impRunBtn').disabled = true; $('impStatus').textContent = 'Importing… large files and lead matching can take a minute.';
+  const box = $('impResult');
+  try {
+    const r = await api().run_import(impFile.path, impFile.sheet || null, mapping, meta, opts);
+    box.className = 'result' + (r.ok ? '' : ' err'); box.style.display = 'block';
+    if (r.ok) {
+      const parts = [];
+      if (r.dup_existing) parts.push(`${fmt(r.dup_existing)} already in Used Data (same phone and email)`);
+      if (r.dup_infile) parts.push(`${fmt(r.dup_infile)} repeated inside the file`);
+      if (r.skipped_strict) parts.push(`${fmt(r.skipped_strict)} with a phone or email already used (strict option)`);
+      if (r.skipped_blank) parts.push(`${fmt(r.skipped_blank)} with no phone or email`);
+      box.textContent = `Imported ${fmt(r.imported)} of ${fmt(r.total)} rows from ${impFile.name}.` +
+        (r.skipped ? `\nSkipped ${fmt(r.skipped)} duplicate rows: ${parts.join('; ')}.` : '\nNo duplicates found.') +
+        `\n${fmt(r.marked)} leads in All Leads matched by phone/email and are now marked as used.`;
+    } else box.textContent = r.message;
+    if (r.ok) { await refreshTotals(); usedLoaded = false; await loadCatalogs(true); schedule(); }
+  } catch (e) { box.className = 'result err'; box.style.display = 'block'; box.textContent = 'Import failed: ' + e; }
+  $('impRunBtn').disabled = false; $('impStatus').textContent = '';
+}
+
+// ================================================================ FILTER FILE
+let fltFile = null, fltOut = '', fltOutDir = '';
+async function fltBrowse() { const r = await api().open_file(); if (!r.ok) { toast(r.message); return; } fltLoad(r); }
+async function fltSheetChange() { const r = await api().file_info(fltFile.path, $('fltSheet').value); if (!r.ok) { toast(r.message); return; } fltLoad(r); }
+function fltLoad(r) {
+  fltFile = r;
+  $('fltPath').textContent = r.path; $('fltInfo').textContent = fileInfoLine(r);
+  fillSheets($('fltSheet'), r);
+  for (const [id, f] of [['fltPhoneCol', 'phone'], ['fltEmailCol', 'email']]) {
+    const s = $(id);
+    s.innerHTML = '<option value="">— none —</option>' + r.headers.map(h => `<option ${r.mapping[f] === h ? 'selected' : ''}>${esc(h)}</option>`).join('');
+    s.disabled = false;
+  }
+  previewTable($('fltPreview'), r.headers, r.sample);
+  $('fltRunBtn').disabled = false; $('fltResult').style.display = 'none'; $('fltOpen').style.display = 'none';
+}
+async function fltRun() {
+  if (!fltFile) return;
+  const mp = $('fltMatchPhone').checked, me = $('fltMatchEmail').checked;
+  const pc = $('fltPhoneCol').value, ec = $('fltEmailCol').value;
+  if (!((mp && pc) || (me && ec))) { toast('Select at least one match rule and map its column.'); return; }
+  $('fltRunBtn').disabled = true; $('fltStatus').textContent = 'Comparing against Used Data…';
+  const box = $('fltResult');
+  try {
+    const r = await api().filter_file(fltFile.path, fltFile.sheet || null, pc, ec, mp, me);
+    box.className = 'result' + (r.ok ? '' : ' err'); box.style.display = 'block';
+    if (r.ok) {
+      box.textContent = `Clean file saved to ${r.path}\nRows in file: ${fmt(r.total)} · kept: ${fmt(r.kept)} · removed (already in Used Data): ${fmt(r.removed)}\nPhone values rewritten to 10 digits: ${fmt(r.normalized)}\nThe database was not changed.`;
+      fltOut = r.path; fltOutDir = r.path.replace(/[\\/][^\\/]*$/, ''); $('fltOpen').style.display = 'flex';
+    } else box.textContent = r.message;
+  } catch (e) { box.className = 'result err'; box.style.display = 'block'; box.textContent = 'Filter failed: ' + e; }
+  $('fltRunBtn').disabled = false; $('fltStatus').textContent = '';
+}
+
+// ================================================================ HISTORY
+async function loadHistory() {
+  const h = await api().history(300);
+  const thead = $('hgrid').querySelector('thead'), tbody = $('hgrid').querySelector('tbody');
+  const cols = h.columns;
+  thead.innerHTML = '<tr>' + cols.map(c => `<th>${esc(c.replace(/_/g, ' '))}</th>`).join('') + '</tr>';
+  tbody.innerHTML = h.rows.map(r => '<tr>' + r.map((v, i) => {
+    const c = cols[i];
+    if (c === 'output_path' && v) return `<td><a href="#" onclick="openPath(${JSON.stringify(v).replace(/"/g, '&quot;')});return false" title="${esc(v)}">open</a></td>`;
+    if (c === 'occurred_at' && v) return `<td>${esc(String(v).replace('T', ' ').slice(0, 19))}</td>`;
+    if (c === 'rows' || c === 'rows_skipped' || c === 'places_marked') return `<td style="text-align:right">${v == null ? '' : fmt(v)}</td>`;
+    return `<td title="${esc(v)}">${esc(v)}</td>`;
+  }).join('') + '</tr>').join('') || '<tr><td colspan="13" class="muted" style="padding:20px">No history yet</td></tr>';
+}
+
+window.addEventListener('pywebviewready', init);
+</script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # full history, so the secret scan can check every commit
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Compile all sources
+        run: python -m py_compile leads_app/app.py leads_app/schema.py leads_app/build_db.py leads_app/migrate_v2.py leads_app/merge.py pipeline/sources.py pipeline/extract.py pipeline/update.py pipeline/fsq_usa_to_csv.py pipeline/build_geo_lookup.py pipeline/overture_usa.py pipeline/osm_usa.py tests/test_api.py tests/test_update.py tests/test_secrets.py
+      - name: API test on synthetic fixture
+        run: python tests/test_api.py --synthetic
+      - name: Update pipeline test (parsers, extractors, merge)
+        run: python tests/test_update.py
+      - name: Secret handling (.env parsing, ignore rules, history scan)
+        run: python tests/test_secrets.py
