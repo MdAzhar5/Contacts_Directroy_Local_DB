@@ -17,6 +17,8 @@ later, when the file is loaded by build_db.py or merged by an update.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -41,12 +43,33 @@ def p(path) -> str:
     return str(path).replace("\\", "/")
 
 
-def _connect() -> duckdb.DuckDBPyConnection:
-    con = duckdb.connect()
+def _work_db(out: Path) -> Path:
+    return Path(tempfile.gettempdir()) / f"leads_extract_{Path(out).stem}.duckdb"
+
+
+def _remove_work_db(out: Path) -> None:
+    work = _work_db(out)
+    for f in (work, Path(f"{work}.wal")):
+        f.unlink(missing_ok=True)
+    shutil.rmtree(f"{work}.tmp", ignore_errors=True)
+
+
+def _connect(out: Path) -> duckdb.DuckDBPyConnection:
+    """Work database for one extraction. It is a file in the system temp folder rather than memory, so DuckDB can move
+    tables to disk when a release does not fit in RAM (Overture 2026-08 ran out of memory in-memory), and it stays out
+    of the OneDrive-synced project folder. _close() deletes it; a leftover from a crashed run is removed on the next one."""
+    _remove_work_db(out)
+    con = duckdb.connect(str(_work_db(out)))
     con.execute(f"PRAGMA threads={max(2, os.cpu_count() or 4)}")
+    con.execute("SET preserve_insertion_order = false")   # every output is written with an explicit ORDER BY
     # "car_repair" -> "Car repair"
     con.execute("CREATE MACRO pretty(x) AS upper(substr(replace(x, '_', ' '), 1, 1)) || substr(replace(x, '_', ' '), 2)")
     return con
+
+
+def _close(con, out: Path) -> None:
+    con.close()
+    _remove_work_db(out)
 
 
 def _fill_from_geo(con, table: str, geo: Path = GEO) -> None:
@@ -84,6 +107,7 @@ def _dedupe_and_write(con, table: str, out: Path, order: str, keep_facebook_only
              + (facebook_id IS NOT NULL)::INT + (address IS NOT NULL)::INT + (city IS NOT NULL)::INT AS completeness
         FROM {table}
     """)
+    con.execute(f"DROP TABLE {table}")   # one copy of the rows at a time: a full release does not fit in RAM several times over
     con.execute("UPDATE cleaned SET phone = NULL, phone_key = NULL WHERE length(phone_key) < 7")
     con.execute("UPDATE cleaned SET email = NULL, email_key = NULL WHERE email_key IS NULL")
     con.execute(f"DELETE FROM cleaned WHERE {contact}")
@@ -93,11 +117,13 @@ def _dedupe_and_write(con, table: str, out: Path, order: str, keep_facebook_only
             SELECT *, row_number() OVER (PARTITION BY phone_key ORDER BY {order}) rn FROM cleaned
         ) WHERE phone_key IS NULL OR rn = 1
     """)
+    con.execute("DROP TABLE cleaned")
     con.execute(f"""
         CREATE TABLE d2 AS SELECT * EXCLUDE (rn, phone_key, email_key, completeness) FROM (
             SELECT *, row_number() OVER (PARTITION BY email_key ORDER BY {order}) rn FROM d1
         ) WHERE email_key IS NULL OR rn = 1
     """)
+    con.execute("DROP TABLE d1")
     out.parent.mkdir(parents=True, exist_ok=True)
     con.execute(f"COPY (SELECT {OUT_COLUMNS} FROM d2 ORDER BY state, city, business_name) TO '{p(out)}' (FORMAT PARQUET, COMPRESSION ZSTD)")
     s = con.execute("""
@@ -119,7 +145,7 @@ def extract_fsq(parquet_dir: Path, out: Path) -> dict:
     files = sorted(Path(parquet_dir).glob("*.parquet"))
     if not files:
         raise SystemExit(f"No parquet files in {parquet_dir}")
-    con = _connect()
+    con = _connect(out)
     t0 = time.time()
     print(f"Foursquare: reading {len(files)} files, filtering to USA rows with a contact field...")
     con.execute(f"""
@@ -150,7 +176,7 @@ def extract_fsq(parquet_dir: Path, out: Path) -> dict:
     stats = _dedupe_and_write(con, "places", out,
                               "(date_closed IS NULL) DESC, completeness DESC, date_refreshed DESC, source_id",
                               keep_facebook_only=True)
-    con.close()
+    _close(con, out)
     print(f"Foursquare done in {(time.time() - t0) / 60:.1f} min -> {out}")
     return stats
 
@@ -162,13 +188,13 @@ def extract_overture(src_dir: Path, out: Path, geo: Path = GEO) -> dict:
     files = sorted(Path(src_dir).glob("*.parquet"))
     if not files:
         raise SystemExit(f"No Overture parquet files in {src_dir}")
-    con = _connect()
+    con = _connect(out)
     con.execute("INSTALL spatial; LOAD spatial")
     t0 = time.time()
     print(f"Overture: reading {len(files)} files, filtering to US places with phone or email...")
-    # GeoParquet files come back as GEOMETRY; a plain parquet keeps the raw WKB blob
+    # GeoParquet files come back as GEOMETRY (DuckDB 1.5+ adds the CRS: GEOMETRY('OGC:CRS84')); a plain parquet keeps the raw WKB blob
     types = {r[0]: r[1] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{p(Path(src_dir) / '*.parquet')}')").fetchall()}
-    geom = "geometry" if types.get("geometry") == "GEOMETRY" else "ST_GeomFromWKB(geometry)"
+    geom = "geometry" if (types.get("geometry") or "").startswith("GEOMETRY") else "ST_GeomFromWKB(geometry)"
     con.execute(f"""
         CREATE TABLE places AS
         SELECT
@@ -206,7 +232,7 @@ def extract_overture(src_dir: Path, out: Path, geo: Path = GEO) -> dict:
     print(f"  {con.execute('SELECT count(*) FROM places').fetchone()[0]:,} rows in {(time.time() - t0) / 60:.1f} min")
     _fill_from_geo(con, "places", geo)
     stats = _dedupe_and_write(con, "places", out, "(date_closed IS NULL) DESC, completeness DESC, source_id")
-    con.close()
+    _close(con, out)
     print(f"Overture done in {(time.time() - t0) / 60:.1f} min -> {out}")
     return stats
 
@@ -244,7 +270,7 @@ def extract_osm(pbf: Path, out: Path, geo: Path = GEO) -> dict:
         pbfs = [f for f in pbfs if f.name != "us-latest.osm.pbf"]
     if not pbfs:
         raise SystemExit(f"No .osm.pbf files found in {pbf}")
-    con = _connect()
+    con = _connect(out)
     con.execute("INSTALL spatial; LOAD spatial")
     t0 = time.time()
 
@@ -311,9 +337,11 @@ def extract_osm(pbf: Path, out: Path, geo: Path = GEO) -> dict:
             NULL::VARCHAR AS date_created, NULL::VARCHAR AS date_refreshed, NULL::VARCHAR AS date_closed
         FROM raw r LEFT JOIN way_coords w ON r.kind = 'way' AND r.refs[1] = w.nid
     """)
+    for t in ("raw", "way_coords", "need_nodes"):
+        con.execute(f"DROP TABLE {t}")
     _fill_from_geo(con, "places", geo)
     stats = _dedupe_and_write(con, "places", out, "completeness DESC, source_id")
-    con.close()
+    _close(con, out)
     print(f"OSM done in {(time.time() - t0) / 60:.1f} min -> {out}")
     return stats
 
