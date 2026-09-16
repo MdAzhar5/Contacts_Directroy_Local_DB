@@ -154,12 +154,15 @@ def create_empty_db(path, stamp: str = "") -> None:
     con.close()
 
 
-def build_tree(con) -> None:
+DIM_TABLES = ("dim_tree", "dim_source", "dim_industry", "dim_category", "dim_state", "dim_city", "dim_country")
+
+
+def build_tree(con, table: str = "dim_tree") -> None:
     """Industry tree: every prefix of every 'A > B > C' category, per source, with the number of
     places under it. Level 1 = main industry, level 2+ = sub-industries."""
-    con.execute("DROP TABLE IF EXISTS dim_tree")
-    con.execute("""
-        CREATE TABLE dim_tree AS
+    con.execute(f"DROP TABLE IF EXISTS {table}")
+    con.execute(f"""
+        CREATE TABLE {table} AS
         SELECT source, path, level, parent, name, count(DISTINCT source_id) AS n
         FROM (
             SELECT source, source_id, lvl AS level,
@@ -173,25 +176,42 @@ def build_tree(con) -> None:
         )
         GROUP BY 1, 2, 3, 4, 5
     """)
-    con.execute("CREATE INDEX IF NOT EXISTS idx_tree_parent ON dim_tree(parent)")
+    if table == "dim_tree":
+        con.execute("CREATE INDEX IF NOT EXISTS idx_tree_parent ON dim_tree(parent)")
 
 
 def build_dims(con) -> None:
-    """(Re)build the dim_* lookup tables that drive the All Leads filter lists."""
-    for t in ("dim_source", "dim_industry", "dim_category", "dim_state", "dim_city", "dim_country"):
-        con.execute(f"DROP TABLE IF EXISTS {t}")
-    build_tree(con)
-    con.execute("CREATE TABLE dim_source AS SELECT source, count(*) AS n FROM places GROUP BY 1 ORDER BY n DESC")
+    """(Re)build the dim_* lookup tables that drive the All Leads filter lists.
+    Each table is built as <name>_new and all of them are swapped in by one short transaction at the end,
+    so a rebuild that is interrupted or runs out of memory leaves the previous tables in place.
+    Must not be called inside an open transaction."""
+    for t in DIM_TABLES:
+        con.execute(f"DROP TABLE IF EXISTS {t}_new")
+    build_tree(con, "dim_tree_new")
+    con.execute("CREATE TABLE dim_source_new AS SELECT source, count(*) AS n FROM places GROUP BY 1 ORDER BY n DESC")
     con.execute("""
-        CREATE TABLE dim_industry AS
+        CREATE TABLE dim_industry_new AS
         SELECT source, industry, count(*) AS n
         FROM (SELECT source, unnest(industry_list) AS industry FROM places) GROUP BY 1, 2 ORDER BY n DESC
     """)
     con.execute("""
-        CREATE TABLE dim_category AS
+        CREATE TABLE dim_category_new AS
         SELECT source, category, split_part(category, ' > ', 1) AS industry, count(*) AS n
         FROM (SELECT source, unnest(category_list) AS category FROM places) GROUP BY 1, 2, 3 ORDER BY n DESC
     """)
-    con.execute("CREATE TABLE dim_state AS SELECT source, state, count(*) AS n FROM places WHERE state IS NOT NULL GROUP BY 1, 2 ORDER BY n DESC")
-    con.execute("CREATE TABLE dim_city AS SELECT source, state, city, count(*) AS n FROM places WHERE state IS NOT NULL AND city IS NOT NULL GROUP BY 1, 2, 3 ORDER BY n DESC")
-    con.execute("CREATE TABLE dim_country AS SELECT source, country, count(*) AS n FROM places WHERE country IS NOT NULL GROUP BY 1, 2 ORDER BY n DESC")
+    con.execute("CREATE TABLE dim_state_new AS SELECT source, state, count(*) AS n FROM places WHERE state IS NOT NULL GROUP BY 1, 2 ORDER BY n DESC")
+    con.execute("CREATE TABLE dim_city_new AS SELECT source, state, city, count(*) AS n FROM places WHERE state IS NOT NULL AND city IS NOT NULL GROUP BY 1, 2, 3 ORDER BY n DESC")
+    con.execute("CREATE TABLE dim_country_new AS SELECT source, country, count(*) AS n FROM places WHERE country IS NOT NULL GROUP BY 1, 2 ORDER BY n DESC")
+    con.execute("BEGIN TRANSACTION")
+    try:
+        for t in DIM_TABLES:
+            con.execute(f"DROP TABLE IF EXISTS {t}")
+            con.execute(f"ALTER TABLE {t}_new RENAME TO {t}")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_tree_parent ON dim_tree(parent)")
+        con.execute("COMMIT")
+    except BaseException:
+        try:
+            con.execute("ROLLBACK")
+        except Exception:
+            pass    # DuckDB already ended the transaction (it rejected or was interrupted during COMMIT); keep the real error
+        raise

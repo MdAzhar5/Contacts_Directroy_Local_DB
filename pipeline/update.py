@@ -10,7 +10,8 @@ OpenStreetMap, download them, extract USA contacts, and merge them into leads.du
 
 The app must be closed while merging (the database is opened exclusively); the updater
 waits for it. A new lead is added only when neither its phone nor its email is already in All
-Leads or Used Data; the summary printed at the end says how many were added and how many were skipped.
+Leads; the summary printed at the end says how many were added and how many were skipped.
+Updates never read or change Used Data and never mark leads used (only imports do).
 With --relaunch the app is started again when the merge is done (after ~8 seconds, or Enter).
 """
 from __future__ import annotations
@@ -56,6 +57,7 @@ def open_db(wait: bool = False):
         try:
             con = duckdb.connect(str(DB))
             install_macros(con)
+            con.execute("SET preserve_insertion_order = false")   # row order is irrelevant; saves memory on 25M-row writes
             return con
         except duckdb.IOException as exc:
             if not wait or "being used by another process" not in str(exc):
@@ -145,11 +147,17 @@ def run_update(source: str, version: str | None, assume_yes: bool, keep_download
         # keep a copy where build_db.py looks for it
         shutil.copyfile(parquet, DATA / OUTPUT_NAMES[source])
     con = open_db(wait=True)
+
+    def saved():
+        global merge_done
+        merge_done = True
+
     try:
-        stats = merge(con, source, parquet, version)
+        # merge_done flips as soon as the data is committed (right after COMMIT, before the checkpoint and the filter
+        # rebuild), so a failure or Ctrl+C after that point is reported as "already installed"
+        stats = merge(con, source, parquet, version, on_saved=saved)
     finally:
         con.close()
-    merge_done = True
     if raw is not None and not keep_download:
         target = raw if raw.is_dir() else raw.parent
         try:
@@ -171,7 +179,6 @@ def print_summary(s: dict) -> None:
         ("Fresh leads added (neither phone nor email seen before):", s["fresh"]),
         ("Old leads skipped:", s["skipped_total"]),
         ("  phone or email already in All Leads:", s["skipped_in_leads"]),
-        ("  phone or email already in Used Data:", s["skipped_in_used"]),
         ("  duplicate phone/email inside this release:", s["skipped_duplicate"]),
         ("  no valid phone or email:", s["skipped_no_contact"]),
     ]
@@ -181,8 +188,9 @@ def print_summary(s: dict) -> None:
         print(f"  {label:<{width}}{n:>12,}")
     print(f"  Businesses already in the database (same source id): {s['existing']:,} "
           f"({s['updated']:,} updated, {s['unchanged']:,} unchanged)")
-    print(f"  Marked used: {s['marked']:,}")
     print(f"  {s['source']} rows in All Leads: {s['before']:,} -> {s['after']:,}")
+    if s.get("dims_error"):
+        print(f"  WARNING: the filter lists were not rebuilt ({s['dims_error']}); they keep their previous counts until the next update.")
 
 
 def pause(seconds: int = 8) -> None:

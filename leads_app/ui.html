@@ -334,7 +334,7 @@
         <span class="spacer"></span>
         <button class="small" id="updCheckBtn" onclick="loadUpdates(true)">Check now</button>
       </div>
-      <p class="hint" style="margin-top:8px">Foursquare, Overture and OpenStreetMap publish new releases regularly. The app checks once a day when it starts. A newer release can be downloaded and merged into All Leads: only fresh leads are added (a phone or email not already in All Leads or Used Data), the rest are skipped and counted, businesses you already have are updated in place, and your Used Data marks are kept.</p>
+      <p class="hint" style="margin-top:8px">Foursquare, Overture and OpenStreetMap publish new releases regularly. The app checks once a day when it starts. A newer release can be downloaded and merged into All Leads: only fresh leads are added (neither their phone nor their email is already in All Leads), the rest are skipped and counted, and businesses you already have are updated in place. Updates never touch Used Data or change which leads are used; only imports do that.</p>
       <div class="preview" style="max-height:none"><table id="updGrid"><thead><tr><th>Source</th><th>Installed release</th><th>Installed on</th><th>Latest release</th><th>Newer by</th><th>Download</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
     </div>
     <div class="card">
@@ -348,7 +348,7 @@
         <li>Click <b>Download &amp; install</b>. The updater opens in its own console window and this app closes so the database is free.</li>
         <li>The release is downloaded into <code>data\</code> (10 to 12 GB, resumable), then USA contacts are extracted and normalized.</li>
         <li>Businesses already in All Leads (same source id) are updated if their details changed, otherwise left untouched.</li>
-        <li>Every other row is a candidate. It is added only when its phone or email is not already in All Leads or Used Data. Rows with no valid phone or email, rows whose phone or email is already known, and repeats of the same phone or email inside the release are skipped and counted.</li>
+        <li>Every other row is a candidate. It is added only when neither its phone nor its email is already in All Leads. Used Data is not checked and no lead is marked used. Rows with no valid phone or email, rows whose phone or email is already known, and repeats of the same phone or email inside the release are skipped and counted.</li>
         <li>Fresh leads are stamped with the update, filter tables are rebuilt, the raw download is deleted, and the app starts again showing how many fresh leads were added and how many old ones were skipped. The run appears below, under Data batch in All Leads, and in History as kind "update".</li>
       </ol>
       <p class="hint" style="margin:10px 0 0">Foursquare needs a Hugging Face token in the git-ignored <code>.env</code> file (copy <code>.env.example</code> and set <code>HF_TOKEN</code>). Overture and OpenStreetMap need no credentials. To be told about new releases without opening the app, run <code>pipeline\install_daily_check.bat</code> once.</p>
@@ -400,8 +400,13 @@ function showTab(name) {
 // ================================================================ DATA UPDATES
 let updState = null, batchNews = false;
 const daysText = (n, available) => n == null || n < 0 ? '' : n === 0 ? (available ? 'same day' : '') : `${fmt(n)} day${n === 1 ? '' : 's'}`;
-const skippedParts = b => [`${fmt(b.skipped_in_leads)} phone or email already in All Leads`, `${fmt(b.skipped_in_used)} already in Used Data`,
+const skippedParts = b => [`${fmt(b.skipped_in_leads)} phone or email already in All Leads`,
+  // only updates installed before updates were separated from Used Data have this count
+  ...(b.skipped_in_used ? [`${fmt(b.skipped_in_used)} already in Used Data`] : []),
   `${fmt(b.skipped_duplicate)} repeated inside the release`, `${fmt(b.skipped_no_contact)} with no valid phone or email`];
+// [installed, latest] as shown: two releases of the same day (e.g. 2026-09-10.0 and .1) need their full versions
+const relShown = r => r.installed && r.version && r.installed !== r.version && r.installed_release_date === r.latest_release_date
+  ? [r.installed, r.version] : [r.installed_release_date || r.installed, r.latest_release_date || r.version];
 function renderUpdates(st) {
   updState = st;
   const tbody = $('updGrid').querySelector('tbody');
@@ -410,9 +415,10 @@ function renderUpdates(st) {
       : r.available ? `<b style="color:var(--warn)">new release available</b>${r.latest_release_date ? ` <span class="muted">· released ${esc(r.latest_release_date)}</span>` : ''}`
       : (r.version ? 'up to date' : 'not checked yet');
     const btn = r.available ? `<button class="small primary" onclick="askUpdate('${esc(r.source)}')">Download &amp; install</button>` : '';
-    return `<tr><td><b>${esc(r.source)}</b></td><td title="${esc(r.installed || '')}">${esc(r.installed_release_date || 'not recorded')}</td>` +
+    const [inst, latest] = relShown(r);
+    return `<tr><td><b>${esc(r.source)}</b></td><td title="${esc(r.installed || '')}">${esc(inst || 'not recorded')}</td>` +
       `<td>${esc(r.updated_at ? r.updated_at.slice(0, 10) : '')}</td>` +
-      `<td title="${esc(r.version || '')}">${esc(r.latest_release_date || '')}<span class="muted"> ${esc(r.note || '')}</span></td>` +
+      `<td title="${esc(r.version || '')}">${esc(latest || '')}<span class="muted"> ${esc(r.note || '')}</span></td>` +
       `<td>${esc(daysText(r.days_newer, r.available))}</td><td>${esc(r.size_text)}</td><td>${status}</td><td>${btn}</td></tr>`;
   }).join('');
   renderBatchGrid(st.batches || []);
@@ -434,14 +440,16 @@ function renderBatchGrid(batches) {
 }
 // pick one batch in All Leads so its fresh leads can be compared with earlier data
 function viewBatch(id) {
-  sel.batches.clear(); sel.batches.add(String(id));
-  renderBatches(); showTab('leads'); offset = 0; refresh();
+  resetAll();   // any other filter would hide part of the batch; show all of its unused leads, open or closed
+  $('open_only').checked = false;
+  sel.batches.add(String(id));
+  renderBatches(); showTab('leads'); schedule();
+  toast('Showing the unused leads this update added. Other All Leads filters were cleared.', true);
 }
 async function loadUpdates(force) {
-  if (!force && updState && !updState.stale) { renderUpdates(updState); return; }
   $('updCheckBtn').disabled = true;
   try {
-    let st = await api().updates_status();
+    let st = await api().updates_status();   // database only and quick, so batch counts are always current
     renderUpdates(st);
     if (force || st.stale) { $('updNote').textContent = 'Checking online…'; st = await api().check_updates(); renderUpdates(st); }
   } catch (e) { toast('Update check failed: ' + e); }
@@ -449,12 +457,13 @@ async function loadUpdates(force) {
 }
 function askUpdate(source) {
   const r = updState.results.find(x => x.source === source);
-  const days = daysText(r.days_newer, r.available);
+  const d = r.days_newer, days = d == null || d < 0 ? '' : d === 0 ? ' (published the same day)' : ` (${daysText(d, true)} newer)`;
+  const [inst, latest] = relShown(r);
   $('updTitle').textContent = `Update ${source} to ${r.version}?`;
-  $('updText').textContent = `Installed release: ${r.installed_release_date || 'not recorded'}${r.updated_at ? ` (installed on ${r.updated_at.slice(0, 10)})` : ''}\n` +
-    `Latest release: ${r.latest_release_date || r.version}${days ? ` (${days} newer)` : ''}\n\n` +
+  $('updText').textContent = `Installed release: ${inst || 'not recorded'}${r.updated_at ? ` (installed on ${r.updated_at.slice(0, 10)})` : ''}\n` +
+    `Latest release: ${latest}${days}\n\n` +
     `This downloads ${r.size_text || 'the release'}${r.note ? ` (${r.note})` : ''}, extracts USA contacts and merges them into All Leads. ` +
-    `Only leads whose phone or email is not already in All Leads or Used Data are added; the rest are skipped and counted. ` +
+    `A new lead is added only when neither its phone nor its email is already in All Leads; the rest are skipped and counted. Used Data is not touched. ` +
     `Businesses already in All Leads are updated in place. When it finishes you will see how many fresh leads were added and how many old ones were skipped, ` +
     `and the new batch can be picked under Data batch in All Leads.\n\n` +
     `Leads Explorer will close while the updater runs in a separate window, then start again automatically. Keep the computer on; the download can take a while and resumes if interrupted.`;

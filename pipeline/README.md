@@ -2,7 +2,7 @@
 
 Two ways to get lead data into `leads_app/leads.duckdb`:
 
-- **`update.py`** (normal use) checks online for a newer release of a source, downloads it, extracts USA contacts and **merges** it into an existing database. Nothing is duplicated and Used Data marks are kept. This is what the app's **Updates** tab runs.
+- **`update.py`** (normal use) checks online for a newer release of a source, downloads it, extracts USA contacts and **merges** it into an existing database. Nothing is duplicated, and Used Data and usage marks are never touched (only imports change them). This is what the app's **Updates** tab runs.
 - **The individual scripts** below produce the parquet files that `leads_app/build_db.py` reads when building a database **from scratch**.
 
 Everything is read from and written to `../data/` (git-ignored).
@@ -34,7 +34,7 @@ If you ever paste a token somewhere it does not belong, revoke it on the Hugging
 | `python pipeline/update.py --set-version Overture 2026-08-19.0` | Record an installed version without downloading anything |
 | `pipeline\install_daily_check.bat` | Register a Windows task that checks daily at 09:30 and pops up when new data exists |
 
-Close the app first, or let the updater wait for it; the database is opened exclusively during the merge. Downloads resume if interrupted, so re-running the same command after a failure continues where it stopped. A merge is atomic, including the filter-table rebuild: if anything fails, the database is left untouched. If only the removal of the raw download fails afterwards, the updater warns and says the update is installed; do not install the same release again.
+Close the app first, or let the updater wait for it; the database is opened exclusively during the merge. Downloads resume if interrupted, so re-running the same command after a failure continues where it stopped. The row changes, the installed version in `meta` and the History entry are committed together: if anything fails before that commit, the database is left untouched. The filter tables (industry tree, states, cities) are rebuilt after the commit and swapped in whole; if that rebuild fails, the update stays installed, the previous filter lists (with their old counts) stay in place until the next rebuild, and the updater prints a warning. Whenever a failure or Ctrl+C comes after the commit, or only the removal of the raw download fails, the updater says the update is already installed; do not install the same release again.
 
 ### Where releases come from
 
@@ -55,31 +55,28 @@ Every row of the release is matched on `(source, source_id)`:
   |---|---|
   | no valid phone and no valid email | skipped: no contact |
   | phone or email already in All Leads (any source, including a phone or email an existing business drops in this release) | skipped: already in All Leads |
-  | phone or email already in Used Data | skipped: already in Used Data |
   | shares a phone or email with another new row of the same release | the best row per phone, then per email, is kept (open first, then the most filled-in of phone/email/website/address/city, then source id); a row is skipped as a duplicate only when a kept row holds its phone or email, otherwise it competes again |
   | anything left | **fresh**: inserted |
 
-  So a new row is fresh only when neither its phone nor its email is already known. Merging the same release twice adds nothing the second time.
+  So a new row is fresh only when neither its phone nor its email is already in All Leads. Merging the same release twice adds nothing the second time.
 
-- existing rows whose phone or email is in Used Data are **marked used**,
-- the industry tree and the state/city lists are rebuilt, and the installed version is recorded in `meta`.
+- Used Data is not read or changed and no lead is marked used; usage changes only through imports,
+- the installed version is recorded in `meta`, and after the commit the industry tree and the state/city lists are rebuilt.
 
 Skipped rows are not inserted, but nothing is lost: the extracted parquet stays in `data/<source>/<version>/`.
 
 Each fresh row is stamped with `places.added_batch` = the id of the run's History entry (`NULL` = data from the original build, before tracking). The app uses it for the **Data batch** filter in All Leads, the **Added in** preview column, the `added_in` export column and the **Installed updates** list on the Updates tab. Databases built before this column existed get it added automatically (the app when it starts, the updater at the start of the merge).
 
-The run is written to History as kind `update`: `rows` = fresh leads added, `rows_skipped` = old leads skipped, `places_marked` = marked used, and `filters_json` holds the full breakdown (`release_date`, `installed_at`, `total`, `existing`, `updated`, `unchanged`, `new_candidates`, `fresh`, `skipped_in_leads`, `skipped_in_used`, `skipped_duplicate`, `skipped_no_contact`, `skipped_total`, `marked`). `update.py` prints the same summary at the end, for example:
+The run is written to History as kind `update`: `rows` = fresh leads added, `rows_skipped` = old leads skipped, `places_marked` = 0 (updates mark nothing), and `filters_json` holds the full breakdown (`release_date`, `installed_at`, `total`, `existing`, `updated`, `unchanged`, `new_candidates`, `fresh`, `skipped_in_leads`, `skipped_duplicate`, `skipped_no_contact`, `skipped_total`). `update.py` prints the same summary at the end, for example:
 
 ```
 Overture release 2026-09-17 (2026-09-17.0), installed 2026-09-20
   Fresh leads added (neither phone nor email seen before):       812,334
-  Old leads skipped:                                           9,012,345
+  Old leads skipped:                                           8,710,571
     phone or email already in All Leads:                       8,650,120
-    phone or email already in Used Data:                         301,774
     duplicate phone/email inside this release:                    55,210
     no valid phone or email:                                       5,241
   Businesses already in the database (same source id): 2,104,551 (35,012 updated, 2,069,539 unchanged)
-  Marked used: 1,204
   Overture rows in All Leads: 11,954,321 -> 12,766,655
 ```
 
@@ -104,7 +101,7 @@ Steps 3 and 4 can instead be done with `update.py --update <source>`, which down
 | `sources.py` | Where each source publishes releases, how to find the newest one, resumable download |
 | `extract.py` | The three extractors that turn a raw release into the common 19-column contact parquet |
 | `update.py` | The command-line updater: check, download, extract, merge, relaunch |
-| `../leads_app/merge.py` | The merge itself (update existing / add fresh, skip old / mark used / rebuild / record version) |
+| `../leads_app/merge.py` | The merge itself (update existing / add fresh, skip old / record version / rebuild filters) |
 | `fsq_usa_to_csv.py`, `overture_usa.py`, `osm_usa.py`, `build_geo_lookup.py` | Thin wrappers for building from scratch |
 
 ## Common layout

@@ -30,10 +30,11 @@ Excel import/export uses DuckDB's `excel` extension (downloaded automatically th
 **Updates** - checks online (once a day at startup, or on demand) whether Foursquare, Overture or OpenStreetMap published a newer release. The table shows, per source, the installed release date, when it was installed, the latest release date, how many days newer it is, and the download size. **Download & install** asks first (showing installed vs latest release), then opens the updater in its own console and closes the app so the database is free; it downloads, extracts, merges and starts the app again. The merge rule:
 
 - A business already in All Leads (same source and source id) is updated in place when its details changed, otherwise left alone. It is never counted as fresh.
-- Every other row is added only when it is **fresh**: its phone or email is not already in All Leads (any source) or Used Data. Rows with no valid phone or email, rows whose phone or email is already known, and repeats of the same phone or email inside the release are **skipped** and counted, not inserted.
-- Fresh leads are stamped with the update (`places.added_batch`), so they show up as their own batch in All Leads. Used marks survive.
+- Every other row is added only when it is **fresh**: neither its phone nor its email is already in All Leads (any source, including a phone or email an existing business drops in this release). Rows with no valid phone or email, rows whose phone or email is already known, and repeats of the same phone or email inside the release are **skipped** and counted, not inserted.
+- Fresh leads are stamped with the update (`places.added_batch`), so they show up as their own batch in All Leads.
+- Updates are not connected to Used Data: they never check it, never change it and never mark a lead used. Used Data and usage marks change only through Import & Map.
 
-The updater console prints fresh added vs old skipped (with the reasons) before the app restarts, and the app shows a one-time notice for a newly installed batch. The **Installed updates** card lists every installed release: release date, installed on, fresh added, old skipped (split into already in All Leads / already in Used Data / repeated inside the release / no valid phone or email), existing businesses updated / unchanged, how many of its fresh leads are still unused, and **View in All Leads** to open just that batch. Updates installed before batch tracking show "not tracked" and their rows count as original data. See [pipeline/README.md](../pipeline/README.md) for the command-line equivalent and the daily background check.
+The updater console prints fresh added vs old skipped (with the reasons) before the app restarts, and the app shows a one-time notice for a newly installed batch. The **Installed updates** card lists every installed release: release date, installed on, fresh added, old skipped (split into already in All Leads / repeated inside the release / no valid phone or email), existing businesses updated / unchanged, how many of its fresh leads are still unused (recounted each time the tab opens), and **View in All Leads** to open just that batch (it clears the other All Leads filters and shows the batch's unused leads, open or closed). Updates installed before batch tracking show "not tracked" and their rows count as original data. See [pipeline/README.md](../pipeline/README.md) for the command-line equivalent and the daily background check.
 
 ## Normalization rules (applied everywhere: pipeline builds, imports, filter files, exports)
 
@@ -50,8 +51,8 @@ The updater console prints fresh added vs old skipped (with the reasons) before 
 | `app.py` | Desktop app: native window plus every API the UI calls. `LEADS_DB` env var overrides the database path. |
 | `ui.html` | The interface (five tabs). |
 | `schema.py` | Shared normalization macros, v2 store DDL, and dim-table builder. |
-| `build_db.py` | Fresh build of `leads.duckdb` from the pipeline outputs; Used Data starts empty. |
-| `merge.py` | Merges a newly downloaded source release into an existing database (update existing businesses, insert only fresh leads stamped with the batch, count the skipped ones, mark used, rebuild filters, record the version). |
+| `build_db.py` | Fresh build of `leads.duckdb` from the pipeline outputs; Used Data starts empty. Refuses to replace an existing `leads.duckdb` unless run with `--replace`, and never replaces it when no input is found. |
+| `merge.py` | Merges a newly downloaded source release into an existing database (update existing businesses, insert only fresh leads stamped with the batch, count the skipped ones, record the version, rebuild filters). Never touches Used Data or usage marks. |
 | `migrate_v2.py` | The one-time upgrade that was applied on 2026-09-14 (old `leads.duckdb` + ContactDirectory's `contacts.db` to the v2 layout). Kept for reference; it expects the SQLite file at `../ContactDirectory/data/contacts.db`. |
 | `test_api.py` | GUI-free regression test on a sampled fixture (never writes to the real database). |
 | `leads.duckdb` | The database (schema v2). This is the only copy of the data: the source files were removed after the build, so back it up rather than rebuild it. |
@@ -63,11 +64,11 @@ The updater console prints fresh added vs old skipped (with the reasons) before 
 - `history` - `kind` is `import`, `export`, `filter` or `update`; `places_marked` says how many leads that action marked as used. For `update`, `rows` is fresh leads added, `rows_skipped` the skipped ones, and `filters_json` holds the full merge counts (release date, installed at, existing / updated / unchanged, fresh, and each skip reason).
 - `meta` - `schema_version`, plus `source_version:<source>` and `source_updated_at:<source>` for each installed data release, the cached `update_check` result, and `ui_last_seen_batch` (the newest batch the app has already announced).
 - `catalogs` - `(kind, name)` for source, industry, source_type, source_category, category.
-- `dim_*` - per-source counts driving the All Leads filter lists. `meta` - `schema_version = 2`.
+- `dim_*` - per-source counts driving the All Leads filter lists; the app rebuilds any that are missing on start. `meta` - `schema_version = 2`.
 
 ## Data pipeline
 
-The scripts that produce the All Leads data live in [`../pipeline`](../pipeline/README.md) and write everything to `../data` (git-ignored). `build_db.py` reads its inputs from there. Close the app before running `build_db.py` or `migrate_v2.py`. A fresh `build_db.py` starts with an empty Used Data store; export Used Data first from the Used Data tab and import it again afterwards.
+The scripts that produce the All Leads data live in [`../pipeline`](../pipeline/README.md) and write everything to `../data` (git-ignored). `build_db.py` reads its inputs from there. Close the app before running `build_db.py` or `migrate_v2.py`. Replacing an existing database needs `python build_db.py --replace`; back up `leads.duckdb` first. A fresh `build_db.py` starts with an empty Used Data store; export Used Data first from the Used Data tab and import it again afterwards.
 
 ## Tests
 

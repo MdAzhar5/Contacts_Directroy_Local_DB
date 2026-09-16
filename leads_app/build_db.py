@@ -12,8 +12,11 @@ emails lowercased, state codes normalized. The Used Data store starts EMPTY:
 import your contacts through the app, or use migrate_v2.py to upgrade an existing
 database while keeping its Used Data.
 
-Close the app before running this, since it replaces the database file.
-Run:  python build_db.py
+Close the app before running this, since it replaces the database file. An existing
+leads.duckdb (possibly the only copy of your leads, Used Data and History) is only replaced
+when --replace is given, and never when no input is found.
+Run:  python build_db.py            (no database yet)
+      python build_db.py --replace  (back up leads.duckdb first)
 """
 import sys
 import time
@@ -63,6 +66,12 @@ def main() -> None:
         selects.append(f"SELECT '{name}' AS source, {sid} AS source_id, {COMMON} FROM {reader}")
         print(f"Including {name}: {path.name}")
     if DB.exists():
+        if not selects:
+            raise SystemExit(f"No pipeline inputs found. Nothing was changed; {DB} is kept.")
+        if "--replace" not in sys.argv[1:]:
+            raise SystemExit(f"{DB} already exists and holds your current leads, Used Data and History.\n"
+                             "Nothing was changed. To rebuild from scratch anyway, back it up, close the app and run:\n"
+                             "  python build_db.py --replace")
         DB.unlink()
     if not selects:
         create_empty_db(DB, datetime.now(timezone.utc).isoformat(timespec="seconds"))

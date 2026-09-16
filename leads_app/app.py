@@ -3,9 +3,9 @@ Leads Explorer - desktop app over two stores in one DuckDB file:
 
   places         25M USA business leads (Foursquare, Overture Maps, OpenStreetMap); added_batch says
                  which installed update added a lead (NULL = original data)
-  used_contacts  contacts already used: everything imported from ContactDirectory,
-                 every file imported through "Import & Map", and every export made
-                 from "All Leads" with "mark as used" on.
+  used_contacts  contacts already used: everything imported from ContactDirectory and
+                 every file imported through "Import & Map" (only imports feed it;
+                 exports and data updates never change usage).
 
 Run:  python app.py      Needs leads.duckdb (schema v2, see migrate_v2.py).
 """
@@ -22,7 +22,7 @@ from pathlib import Path
 import duckdb
 import webview
 
-from schema import build_tree, create_empty_db, ensure_places_columns, install_macros
+from schema import build_dims, build_tree, create_empty_db, ensure_places_columns, install_macros
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -49,6 +49,7 @@ USED_PREVIEW = ["name", "phone", "email", "address_line_1", "city", "state", "po
                 "industry", "category", "source", "source_type", "source_file", "uploaded_at"]
 USED_FACETS = ["source", "source_type", "source_category", "industry", "category", "state", "city", "country", "source_file"]
 CATALOG_KINDS = ["source", "industry", "source_type", "source_category", "category"]
+DIM_TABLES = ["dim_tree", "dim_source", "dim_industry", "dim_category", "dim_state", "dim_city", "dim_country"]
 
 # Fields a user can map from an uploaded file (controlled metadata is chosen separately)
 MAPPING_FIELDS = [
@@ -195,9 +196,14 @@ class Api:
         self._lock = threading.Lock()
         self._window = None
         self._csv_mode = {}   # path -> (encoding, lenient)
-        if not self._table_exists("dim_tree"):
+        missing = [t for t in DIM_TABLES if not self._table_exists(t)]
+        if missing == ["dim_tree"]:
             # one-time upgrade for databases built before the industry tree existed
             build_tree(self._con)
+        elif missing:
+            # a filter-table rebuild that was cut off (older updaters rebuilt them after committing)
+            build_dims(self._con)
+        if missing:
             self._con.execute("CHECKPOINT")
 
     # ---------- helpers ----------
@@ -648,7 +654,10 @@ class Api:
                       f"phone-or-email already used: {skipped_strict}; no phone or email: {skipped_blank}", path])
                 self._con.execute("COMMIT")
             except Exception:
-                self._con.execute("ROLLBACK")
+                try:
+                    self._con.execute("ROLLBACK")
+                except Exception:
+                    pass    # DuckDB already ended the transaction (it rejected the COMMIT); keep the real error
                 raise
         return {"ok": True, "total": total, "imported": imported, "skipped": skipped, "marked": marked, "history_id": hid,
                 "dup_existing": dup_existing, "dup_infile": dup_infile, "skipped_strict": skipped_strict, "skipped_blank": skipped_blank}

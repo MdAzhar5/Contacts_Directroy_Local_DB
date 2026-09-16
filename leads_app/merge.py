@@ -6,14 +6,16 @@ Every release row is matched on (source, source_id):
                             otherwise left alone. Existing rows are never skipped.
   * not in places yet    -> new candidate, classified in this order:
       - no valid phone and no valid email                        -> skipped (no contact)
-      - phone or email already in All Leads (any source)         -> skipped (in leads)
-      - phone or email already in Used Data                      -> skipped (in used)
-      - shares a phone/email with a better row of this release   -> skipped (duplicate)
+      - phone or email already in All Leads (any source; includes
+        contacts an existing business drops in this release)    -> skipped (in leads)
+      - shares a phone/email with a kept row of this release     -> skipped (duplicate)
       - everything left                                          -> FRESH: inserted, added_batch = history id
-  * existing rows whose phone or email is already in Used Data   -> marked used
 
-Skipped rows are not inserted (the extracted parquet stays on disk). Then the filter tables are
-rebuilt, the installed version is recorded in `meta` and the counts are written to History.
+So a lead is fresh only when neither its phone nor its email is already in All Leads. Updates never read
+or change Used Data and never mark leads used: only imports do that. Skipped rows are not inserted
+(the extracted parquet stays on disk). Row changes, the installed version in `meta` and the History counts are
+committed in one transaction; the filter tables are rebuilt afterwards and swapped in whole (see schema.build_dims),
+so a failed rebuild never undoes the installed data.
 Used by pipeline/update.py; can also be called on its own:
 
     python merge.py Overture ../data/overture/2026-08-19.0/overture_usa_contacts.parquet 2026-08-19.0
@@ -42,7 +44,7 @@ CONTACT_COLUMNS = [
 BATCH_COLUMNS = ["source", "source_id"] + CONTACT_COLUMNS
 INSERT_COLUMNS = BATCH_COLUMNS + ["used_at", "used_reason", "added_batch"]
 # why a new candidate was not inserted, in priority order; stats keys are skipped_<reason>
-SKIP_REASONS = ("in_leads", "in_used", "duplicate", "no_contact")
+SKIP_REASONS = ("in_leads", "duplicate", "no_contact")
 # which of several new rows sharing a phone/email is kept (same idea as pipeline/extract.py)
 WINNER_ORDER = "is_open DESC, completeness DESC, source_id"
 
@@ -108,8 +110,8 @@ def classify_new(con, source: str) -> dict:
         FROM batch b
         WHERE NOT EXISTS (SELECT 1 FROM places p WHERE p.source = {fs(source)} AND p.source_id = b.source_id)
     """)
-    # All Leads first (any source), then Used Data; a row keeps the first reason it hits
-    for reason, table in (("in_leads", "places"), ("in_used", "used_contacts")):
+    # All Leads only (any source, plus contacts updated businesses just gave up); Used Data plays no part in updates
+    for reason, table in (("in_leads", "places"), ("in_leads", "prev_contacts")):
         for col in ("phone", "email"):
             con.execute(f"""
                 UPDATE batch_new SET status = '{reason}'
@@ -117,20 +119,50 @@ def classify_new(con, source: str) -> dict:
                   AND {col} IN (SELECT {col} FROM {table} WHERE {col} IS NOT NULL)
             """)
     # duplicates inside the release: keep the best row per phone, then among those the best per email
-    for col in ("phone", "email"):
-        con.execute(f"""
-            UPDATE batch_new SET status = 'duplicate'
-            WHERE source_id IN (
-                SELECT source_id FROM (
-                    SELECT source_id, row_number() OVER (PARTITION BY {col} ORDER BY {WINNER_ORDER}) AS rn
-                    FROM batch_new WHERE status IS NULL AND {col} IS NOT NULL
-                ) WHERE rn > 1
-            )
-        """)
+    competing = "status IS NULL"
+    while True:
+        for col in ("phone", "email"):
+            con.execute(f"""
+                UPDATE batch_new SET status = 'duplicate'
+                WHERE source_id IN (
+                    SELECT source_id FROM (
+                        SELECT source_id, row_number() OVER (PARTITION BY {col} ORDER BY {WINNER_ORDER}) AS rn
+                        FROM batch_new WHERE {competing} AND {col} IS NOT NULL
+                    ) WHERE rn > 1
+                )
+            """)
+        con.execute("UPDATE batch_new SET status = NULL WHERE status = 'retry'")
+        # a row can lose its phone to a row that then lost its email; when no kept row holds its phone or
+        # email it competes again (each round keeps at least one row, so this ends; usually after one round)
+        retry = con.execute("""
+            UPDATE batch_new SET status = 'retry'
+            WHERE status = 'duplicate'
+              AND (phone IS NULL OR phone NOT IN (SELECT phone FROM batch_new WHERE status IS NULL AND phone IS NOT NULL))
+              AND (email IS NULL OR email NOT IN (SELECT email FROM batch_new WHERE status IS NULL AND email IS NOT NULL))
+        """).fetchone()[0]
+        if not retry:
+            break
+        competing = "status = 'retry'"
     return dict(con.execute("SELECT coalesce(status, 'fresh'), count(*) FROM batch_new GROUP BY 1").fetchall())
 
 
-def merge(con, source: str, parquet: Path, version: str, rebuild: bool = True, log=print) -> dict:
+def committed(con, hid: int, stamp: str) -> bool:
+    """After COMMIT raised: did DuckDB commit anyway? (A Ctrl+C during the checkpoint DuckDB runs inside COMMIT
+    raises 'Query interrupted' although the data is committed.) Looks for this run's History row from a new cursor."""
+    try:
+        cur = con.cursor()
+        try:
+            return cur.execute("SELECT count(*) FROM history WHERE id = ? AND kind = 'update' AND occurred_at = ?",
+                               [hid, stamp]).fetchone()[0] > 0
+        finally:
+            cur.close()
+    except Exception:
+        return False
+
+
+def merge(con, source: str, parquet: Path, version: str, rebuild: bool = True, log=print, on_saved=None) -> dict:
+    """on_saved() is called as soon as the new data is committed (also when COMMIT raised after DuckDB had
+    committed), before the clean-up, checkpoint and filter rebuild."""
     t0 = time.time()
     stamp = utc_now()
     parquet = Path(parquet)
@@ -145,14 +177,27 @@ def merge(con, source: str, parquet: Path, version: str, rebuild: bool = True, l
         return " OR ".join(f"{alias}.{c} IS DISTINCT FROM b.{c}" for c in CONTACT_COLUMNS)
 
     con.execute("BEGIN TRANSACTION")
+    hid = None
     try:
         hid = con.execute("SELECT nextval('seq_history')").fetchone()[0]
         log("Updating businesses already in the database whose details changed ...")
-        # counted on release rows (not places rows) so existing = updated + unchanged always holds
+        # counted on release rows (not places rows) so existing = updated + unchanged always holds;
+        # a plain join, since a correlated EXISTS with these OR terms is far slower on a full release
         updated = con.execute(f"""
-            SELECT count(*) FROM batch b
-            WHERE EXISTS (SELECT 1 FROM places p WHERE p.source = {fs(source)} AND p.source_id = b.source_id AND ({diff('p')}))
+            SELECT count(DISTINCT b.source_id) FROM batch b
+            JOIN places p ON p.source = {fs(source)} AND p.source_id = b.source_id
+            WHERE {diff('p')}
         """).fetchone()[0]
+        # phones/emails the changed businesses give up were in All Leads when the update started
+        con.execute("DROP TABLE IF EXISTS prev_contacts")
+        con.execute(f"""
+            CREATE TEMP TABLE prev_contacts AS
+            SELECT CASE WHEN p.phone IS DISTINCT FROM b.phone THEN p.phone END AS phone,
+                   CASE WHEN p.email IS DISTINCT FROM b.email THEN p.email END AS email
+            FROM batch b JOIN places p ON p.source = {fs(source)} AND p.source_id = b.source_id
+            WHERE (p.phone IS NOT NULL AND p.phone IS DISTINCT FROM b.phone)
+               OR (p.email IS NOT NULL AND p.email IS DISTINCT FROM b.email)
+        """)
         if updated:
             sets = ", ".join(f"{c} = b.{c}" for c in CONTACT_COLUMNS)
             con.execute(f"""
@@ -160,7 +205,7 @@ def merge(con, source: str, parquet: Path, version: str, rebuild: bool = True, l
                 FROM batch b
                 WHERE places.source = {fs(source)} AND places.source_id = b.source_id AND ({diff('places')})
             """)
-        log("Checking new businesses against All Leads and Used Data ...")
+        log("Checking new businesses against All Leads ...")
         counts = classify_new(con, source)
         new_candidates = sum(counts.values())
         existing = total - new_candidates
@@ -170,7 +215,6 @@ def merge(con, source: str, parquet: Path, version: str, rebuild: bool = True, l
         log(f"  {existing:,} already in the database ({updated:,} updated, {existing - updated:,} unchanged)")
         log(f"  {new_candidates:,} new businesses in this release: {fresh:,} fresh, {skipped_total:,} old skipped")
         log(f"    {skipped['skipped_in_leads']:,} skipped: phone or email already in All Leads")
-        log(f"    {skipped['skipped_in_used']:,} skipped: phone or email already in Used Data")
         log(f"    {skipped['skipped_duplicate']:,} skipped: duplicate phone or email inside this release")
         log(f"    {skipped['skipped_no_contact']:,} skipped: no valid phone or email")
         if fresh:
@@ -181,41 +225,50 @@ def merge(con, source: str, parquet: Path, version: str, rebuild: bool = True, l
                 FROM batch b
                 WHERE b.source_id IN (SELECT source_id FROM batch_new WHERE status IS NULL)
             """)
-        log("Marking rows already present in Used Data ...")
-        marked = con.execute(f"""
-            UPDATE places SET used_at = ?, used_reason = 'update:{hid}'
-            WHERE source = ? AND used_at IS NULL AND phone IS NOT NULL
-              AND phone IN (SELECT phone FROM used_contacts WHERE phone IS NOT NULL)
-        """, [stamp, source]).fetchone()[0]
-        marked += con.execute(f"""
-            UPDATE places SET used_at = ?, used_reason = 'update:{hid}'
-            WHERE source = ? AND used_at IS NULL AND email IS NOT NULL
-              AND email IN (SELECT email FROM used_contacts WHERE email IS NOT NULL)
-        """, [stamp, source]).fetchone()[0]
-        log(f"  {marked:,} marked used")
         stats = {"source": source, "version": version, "release_date": version[:10], "history_id": hid,
                  "installed_at": stamp, "total": total, "existing": existing, "updated": updated,
                  "unchanged": existing - updated, "new_candidates": new_candidates, "fresh": fresh, **skipped,
-                 "skipped_total": skipped_total, "marked": marked}
+                 "skipped_total": skipped_total}
         set_meta(con, f"source_version:{source}", version)
         set_meta(con, f"source_updated_at:{source}", stamp)
         con.execute("""
             INSERT INTO history (id, kind, filename, occurred_at, source, industry, source_type, source_category, category,
                                  rows, rows_failed, rows_skipped, places_marked, mapping_json, filters_json, error_sample, output_path)
-            VALUES (?, 'update', ?, ?, ?, NULL, NULL, NULL, NULL, ?, 0, ?, ?, NULL, ?, NULL, ?)
-        """, [hid, parquet.name, stamp, source, fresh, skipped_total, marked, json.dumps(stats), str(parquet)])
+            VALUES (?, 'update', ?, ?, ?, NULL, NULL, NULL, NULL, ?, 0, ?, 0, NULL, ?, NULL, ?)
+        """, [hid, parquet.name, stamp, source, fresh, skipped_total, json.dumps(stats), str(parquet)])
+        log("Saving the update (can take several minutes; do not close this window or press Ctrl+C) ...")
         con.execute("COMMIT")
-    except Exception:
-        con.execute("ROLLBACK")
+    except BaseException:
+        try:
+            con.execute("ROLLBACK")
+        except Exception:
+            pass    # DuckDB already ended the transaction (it rejected or was interrupted during COMMIT); keep the real error
+        if on_saved and hid is not None and committed(con, hid, stamp):
+            on_saved()
         raise
-    con.execute("DROP TABLE IF EXISTS batch_new")
-    con.execute("DROP TABLE IF EXISTS batch")
-    if rebuild:
-        log("Rebuilding filter tables (industry tree, states, cities) ...")
-        build_dims(con)
+    # from here on the update is installed, even if the clean-up, checkpoint or rebuild below fails
+    log("  new data saved")
+    if on_saved:
+        on_saved()
+    for t in ("batch_new", "prev_contacts", "batch"):
+        con.execute(f"DROP TABLE IF EXISTS {t}")
+    # write the merge to disk and free its memory before the long rebuild
     con.execute("CHECKPOINT")
     after = con.execute("SELECT count(*) FROM places WHERE source = ?", [source]).fetchone()[0]
-    stats.update(before=before, after=after, seconds=round(time.time() - t0))
+    stats.update(before=before, after=after)
+    if rebuild:
+        # outside the merge transaction (inside it, 25M rows plus millions of pending changes ran out of memory);
+        # build_dims swaps the new tables in at the end, so a failure keeps the previous filter tables
+        log("Rebuilding filter tables (industry tree, states, cities) ...")
+        try:
+            build_dims(con)
+        except Exception as exc:
+            stats["dims_error"] = str(exc)
+            log(f"  WARNING: the new data is installed, but the filter tables could not be rebuilt ({exc}). "
+                "All Leads works; its filter-list counts stay as they were until the next update rebuilds them.")
+        else:
+            con.execute("CHECKPOINT")   # outside the try: once the swap is committed, a failure here is not a failed rebuild
+    stats["seconds"] = round(time.time() - t0)
     log(f"Done: {source} {version}: {before:,} -> {after:,} rows (+{fresh:,} fresh leads added, "
         f"{skipped_total:,} old skipped, {updated:,} updated) in {stats['seconds']}s")
     return stats
