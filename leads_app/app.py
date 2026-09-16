@@ -1,7 +1,8 @@
 """
 Leads Explorer - desktop app over two stores in one DuckDB file:
 
-  places         25M USA business leads (Foursquare, Overture Maps, OpenStreetMap)
+  places         25M USA business leads (Foursquare, Overture Maps, OpenStreetMap); added_batch says
+                 which installed update added a lead (NULL = original data)
   used_contacts  contacts already used: everything imported from ContactDirectory,
                  every file imported through "Import & Map", and every export made
                  from "All Leads" with "mark as used" on.
@@ -15,13 +16,13 @@ import subprocess
 import sys
 import threading
 import zipfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import duckdb
 import webview
 
-from schema import build_tree, create_empty_db, install_macros
+from schema import build_tree, create_empty_db, ensure_places_columns, install_macros
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -90,8 +91,38 @@ def sql_in(values) -> str:
     return ", ".join(sql_str(v) for v in values)
 
 
+def keyword_regex(text: str):
+    """'security, alarm system' -> a case-insensitive whole-word pattern (plurals allowed), or None.
+    Spaces inside a phrase also match '-' and '/', so 'alarm system' finds 'Alarm-Systems'."""
+    words = [w.strip() for w in re.split(r"[,;\n]+", text or "") if w.strip()]
+    if not words:
+        return None
+    parts = [r"[\s\-/&]+".join(re.escape(t) for t in w.split()) for w in words]
+    return r"\b(" + "|".join(parts) + r")(s|es)?\b"
+
+
 def sql_list(values) -> str:
     return "[" + sql_in(values) + "]"
+
+
+def to_int(v):
+    """JSON count -> int, or None when missing or not a number."""
+    try:
+        return None if v is None or isinstance(v, bool) else int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def release_date(version):
+    """'2026-08-19.0' -> '2026-08-19' (every source's version starts with its release date)."""
+    return str(version)[:10] if version else None
+
+
+def days_between(older, newer):
+    try:
+        return (date.fromisoformat(newer[:10]) - date.fromisoformat(older[:10])).days
+    except (TypeError, ValueError):
+        return None
 
 
 def qident(name: str) -> str:
@@ -158,6 +189,9 @@ class Api:
         ver = self._con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() if self._table_exists("meta") else None
         if not ver or int(ver[0]) < 2:
             raise SystemExit("leads.duckdb is the old layout. Close the app and run migrate_v2.py first.")
+        if ensure_places_columns(self._con):
+            # one-time upgrade: places.added_batch (which update inserted a lead; NULL = original data)
+            self._con.execute("CHECKPOINT")
         self._lock = threading.Lock()
         self._window = None
         self._csv_mode = {}   # path -> (encoding, lenient)
@@ -214,11 +248,33 @@ class Api:
 
         if sources:
             clauses.append(f"source IN ({sql_in(sources)})")
+        # data batch: "original" = leads from the first build, an id = leads a tracked update added
+        batches = [str(x).strip() for x in (f.get("batches") or []) if x is not None]
+        batch = ["added_batch IS NULL"] if "original" in batches else []
+        ids = sorted({int(b) for b in batches if re.fullmatch(r"[0-9]{1,18}", b)})
+        if ids:
+            batch.append(f"added_batch IN ({', '.join(map(str, ids))})")
+        if batch:
+            clauses.append("(" + " OR ".join(batch) + ")")
+        industry = []
         if tree:
             # a selected node covers itself and everything beneath it ("Retail" matches "Retail > Shoe Store");
             # a prefix test per list element is far faster than expanding a node into its leaf categories
             match = " OR ".join(f"c = {sql_str(p)} OR starts_with(c, {sql_str(p + ' > ')})" for p in tree)
-            clauses.append(f"len(list_filter(category_list, c -> {match})) > 0")
+            industry.append(f"len(list_filter(category_list, c -> {match})) > 0")
+        # Keywords cut across the three sources' different taxonomies (Foursquare "Security and Safety",
+        # Overture "Home security" / "Security systems" / "Security service", OSM "Office > Security"),
+        # and optionally catch businesses whose category is generic or missing via their name.
+        kw = keyword_regex(f.get("keywords"))
+        if kw:
+            industry.append(f"regexp_matches(coalesce(categories, ''), {sql_str(kw)}, 'i')")
+            if f.get("kw_names", True):
+                industry.append(f"regexp_matches(business_name, {sql_str(kw)}, 'i')")
+        if industry:
+            clauses.append("(" + " OR ".join(industry) + ")")
+        ex = keyword_regex(f.get("exclude"))
+        if ex:
+            clauses.append(f"NOT regexp_matches(coalesce(categories, '') || ' | ' || coalesce(business_name, ''), {sql_str(ex)}, 'i')")
         if countries:
             clauses.append(f"country IN ({sql_in(countries)})")
         if states:
@@ -326,7 +382,7 @@ class Api:
     def preview(self, filters, limit=200, offset=0):
         where = self._where(filters or {})
         cols, rows = self._q(f"""
-            SELECT source, business_name, phone, email, website, address, city, state, zip, categories, date_closed, used_at
+            SELECT source, business_name, phone, email, website, address, city, state, zip, categories, date_closed, used_at, added_batch
             FROM places WHERE {where}
             ORDER BY state, city, business_name
             LIMIT {int(limit)} OFFSET {int(offset)}
@@ -340,9 +396,15 @@ class Api:
             return {"ok": False, "message": "Export cancelled."}
         where = self._where(filters or {})
         stamp = utc_now()
+        # added_in: which data batch each lead came from (read before taking the lock; _rows locks too)
+        whens = "".join(
+            f" WHEN added_batch = {int(b['id'])} THEN "
+            + sql_str(f"{b['source']} release {b['release_date'] or '?'} installed {(b['installed_at'] or '?')[:10]}")
+            for b in self._batch_history() if not b["legacy"])
+        added_in = f"CASE WHEN added_batch IS NULL THEN 'original'{whens} ELSE 'update ' || CAST(added_batch AS VARCHAR) END AS added_in"
         with self._lock:
             self._con.execute(f"""
-                COPY (SELECT {', '.join(EXPORT_COLUMNS)} FROM places WHERE {where} ORDER BY state, city, business_name)
+                COPY (SELECT {', '.join(EXPORT_COLUMNS)}, {added_in} FROM places WHERE {where} ORDER BY state, city, business_name)
                 TO {fs(path)} (HEADER, DELIMITER ',', QUOTE '"', ESCAPE '"')
             """)
             n = self._con.execute(f"SELECT count(*) FROM places WHERE {where}").fetchone()[0]
@@ -649,6 +711,66 @@ class Api:
         row = self._rows("SELECT value FROM meta WHERE key = ?", [key])
         return row[0][0] if row else None
 
+    def _batch_history(self) -> list:
+        """Installed updates (history kind 'update'), newest first, without place counts.
+        Updates merged before batch tracking stored only {version, new, updated, unchanged}: legacy=True,
+        their inserted rows count as original data and fresh/skipped are unknown (None)."""
+        rows = self._rows("""
+            SELECT id, source, occurred_at, places_marked, filters_json
+            FROM history WHERE kind = 'update' ORDER BY id DESC
+        """)
+        out = []
+        for hid, source, occurred_at, marked, fj in rows:
+            try:
+                d = json.loads(fj) if fj else {}
+            except ValueError:
+                d = {}
+            if not isinstance(d, dict):
+                d = {}
+            legacy = "fresh" not in d
+            source = source or d.get("source") or "?"
+            version = d.get("version")
+            b = {"id": int(hid), "source": source, "version": version,
+                 "release_date": d.get("release_date") or release_date(version),
+                 "installed_at": d.get("installed_at") or occurred_at, "legacy": legacy,
+                 "marked": to_int(d.get("marked", marked))}
+            if legacy:
+                new, upd, same = to_int(d.get("new")), to_int(d.get("updated")), to_int(d.get("unchanged"))
+                b.update(existing=None if upd is None or same is None else upd + same, updated=upd, unchanged=same,
+                         new_candidates=new, fresh=None, skipped_total=None, skipped_in_leads=None, skipped_in_used=None,
+                         skipped_duplicate=None, skipped_no_contact=None)
+                b["total"] = None if new is None or b["existing"] is None else new + b["existing"]
+            else:
+                for k in ("total", "existing", "updated", "unchanged", "new_candidates", "fresh", "skipped_total",
+                          "skipped_in_leads", "skipped_in_used", "skipped_duplicate", "skipped_no_contact"):
+                    b[k] = to_int(d.get(k))
+            day = (b["installed_at"] or "")[:10]
+            b["label"] = " · ".join([source] + ([f"release {b['release_date']}"] if b["release_date"] else [])
+                                    + ([f"installed {day}"] if day else []))
+            out.append(b)
+        return out
+
+    def update_batches(self):
+        """Every installed update with its fresh/skipped counts and how many of its leads are still in
+        All Leads (and unused), plus the size of the original data (added_batch IS NULL)."""
+        batches = self._batch_history()
+        in_db = {int(b): (int(n), int(u)) for b, n, u in self._rows(
+            "SELECT added_batch, count(*), count(*) FILTER (WHERE used_at IS NULL) FROM places WHERE added_batch IS NOT NULL GROUP BY 1")}
+        for b in batches:
+            b["in_db"], b["in_db_unused"] = in_db.get(b["id"], (0, 0))
+        orig = self._rows("SELECT source, count(*) FROM places WHERE added_batch IS NULL GROUP BY 1 ORDER BY 2 DESC")
+        return {"batches": batches,
+                "original": {"n": sum(int(n) for _, n in orig), "by_source": [{"v": s, "n": int(n)} for s, n in orig]},
+                "last_seen": to_int(self._meta("ui_last_seen_batch"))}
+
+    def mark_batch_seen(self, batch_id):
+        """Remember the newest batch the UI announced. pywebview runs in private mode, so the page's
+        localStorage does not survive a relaunch; meta does."""
+        with self._lock:
+            self._con.execute("DELETE FROM meta WHERE key = 'ui_last_seen_batch'")
+            self._con.execute("INSERT INTO meta VALUES ('ui_last_seen_batch', ?)", [str(int(batch_id))])
+        return {"ok": True}
+
     def updates_status(self):
         """Installed versions plus the last online check (cached in meta); stale after 24 hours."""
         installed = {k.split(":", 1)[1]: v for k, v in self._rows("SELECT key, value FROM meta WHERE key LIKE 'source_version:%'")}
@@ -656,6 +778,7 @@ class Api:
         cached = self._meta("update_check")
         data = json.loads(cached) if cached else {"checked_at": None, "results": []}
         latest = {r["source"]: r for r in data.get("results", [])}
+        batches = self.update_batches()["batches"]
         results = []
         for source in sources.SOURCES:
             r = latest.get(source, {})
@@ -666,6 +789,9 @@ class Api:
                 "version": ver, "size": r.get("size", 0), "size_text": sources.fmt_size(r["size"]) if r.get("size") else "",
                 "note": r.get("note", ""), "error": r.get("error"),
                 "available": bool(ver) and (cur is None or ver > cur),
+                "installed_release_date": release_date(cur), "latest_release_date": release_date(ver),
+                "days_newer": days_between(cur, ver),
+                "last_batch": next((b for b in batches if b["source"] == source), None),
             })
         stale = True
         if data.get("checked_at"):
@@ -675,7 +801,7 @@ class Api:
             except ValueError:
                 stale = True
         return {"checked_at": data.get("checked_at"), "stale": stale, "results": results,
-                "available": [r["source"] for r in results if r["available"]]}
+                "available": [r["source"] for r in results if r["available"]], "batches": batches}
 
     def check_updates(self):
         """Ask each source for its newest release (network) and cache the answer."""

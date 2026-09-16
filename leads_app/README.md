@@ -17,7 +17,7 @@ Excel import/export uses DuckDB's `excel` extension (downloaded automatically th
 
 ## Tabs
 
-**All Leads** - filter by usage, source, industry, country, state, city, name, ZIP, has phone/email/website/Facebook, open only. The **Industry** filter is a tree: tick a main industry (for example Retail) to take everything under it, or click ▸ to open it and tick specific sub-industries at any depth (Retail > Fashion Retail > Shoe Store). A ticked parent already covers its children. The search box finds sub-industries by name across all levels. Live counts and a 200-row preview. **Download CSV** exports every matching row and is logged in History. It does not change usage: when you have actually used a file, import it through Import & Map and the matching leads become used.
+**All Leads** - filter by usage, source, data batch, industry, country, state, city, name, ZIP, has phone/email/website/Facebook, open only. **Data batch** tells the original data (everything from before batch tracking) apart from the fresh leads each installed update added: tick one release (for example `Overture 2026-09-17`) to see only what that update brought in, tick several to compare, or tick Original. Before any tracked update is installed the section just says so. The preview has an **Added in** column and the CSV an `added_in` column (`original`, or `<source> release <date> installed <date>`). The **Industry** filter is a tree: tick a main industry (for example Retail) to take everything under it, or click ▸ to open it and tick specific sub-industries at any depth (Retail > Fashion Retail > Shoe Store). A ticked parent already covers its children. The search box finds sub-industries by name across all levels. Each source has its own taxonomy (security firms are Foursquare "Security and Safety", but Overture splits them into "Home security", "Security systems" and "Security service", and OSM uses "Office > Security"), so one tree item holds only part of an industry. **Industry keywords** fix that: comma-separated words matched as whole words (plurals included) against the categories of every source, and optionally business names, which also catches businesses whose source category is generic or missing. An exclude box drops false hits (for example `social security, bank, mortgage`). Ticked industries and keywords combine as either/or. Live counts and a 200-row preview. **Download CSV** exports every matching row and is logged in History. It does not change usage: when you have actually used a file, import it through Import & Map and the matching leads become used.
 
 **Used Data** - search (name, email, phone, address, website, NPI, specialty) plus facets for source, source type, source category, industry, category, country, state, city and source file, all with counts that respond to the other filters. Download the filtered contacts as CSV or Excel with all 27 fields.
 
@@ -27,7 +27,13 @@ Excel import/export uses DuckDB's `excel` extension (downloaded automatically th
 
 **History** - every import, export, filter run and data update with counts, metadata and a link to the output file.
 
-**Updates** - checks online (once a day at startup, or on demand) whether Foursquare, Overture or OpenStreetMap published a newer release. When one is available it shows the version and download size and asks before doing anything. **Download & install** opens the updater in its own console and closes the app so the database is free; it downloads, extracts, merges and starts the app again. New businesses are inserted, changed ones updated, unchanged ones untouched, and nothing is duplicated because rows are matched on their source id. Used marks survive, and any new row already present in Used Data is marked used. See [pipeline/README.md](../pipeline/README.md) for the command-line equivalent and the daily background check.
+**Updates** - checks online (once a day at startup, or on demand) whether Foursquare, Overture or OpenStreetMap published a newer release. The table shows, per source, the installed release date, when it was installed, the latest release date, how many days newer it is, and the download size. **Download & install** asks first (showing installed vs latest release), then opens the updater in its own console and closes the app so the database is free; it downloads, extracts, merges and starts the app again. The merge rule:
+
+- A business already in All Leads (same source and source id) is updated in place when its details changed, otherwise left alone. It is never counted as fresh.
+- Every other row is added only when it is **fresh**: its phone or email is not already in All Leads (any source) or Used Data. Rows with no valid phone or email, rows whose phone or email is already known, and repeats of the same phone or email inside the release are **skipped** and counted, not inserted.
+- Fresh leads are stamped with the update (`places.added_batch`), so they show up as their own batch in All Leads. Used marks survive.
+
+The updater console prints fresh added vs old skipped (with the reasons) before the app restarts, and the app shows a one-time notice for a newly installed batch. The **Installed updates** card lists every installed release: release date, installed on, fresh added, old skipped (split into already in All Leads / already in Used Data / repeated inside the release / no valid phone or email), existing businesses updated / unchanged, how many of its fresh leads are still unused, and **View in All Leads** to open just that batch. Updates installed before batch tracking show "not tracked" and their rows count as original data. See [pipeline/README.md](../pipeline/README.md) for the command-line equivalent and the daily background check.
 
 ## Normalization rules (applied everywhere: pipeline builds, imports, filter files, exports)
 
@@ -45,17 +51,17 @@ Excel import/export uses DuckDB's `excel` extension (downloaded automatically th
 | `ui.html` | The interface (five tabs). |
 | `schema.py` | Shared normalization macros, v2 store DDL, and dim-table builder. |
 | `build_db.py` | Fresh build of `leads.duckdb` from the pipeline outputs; Used Data starts empty. |
-| `merge.py` | Merges a newly downloaded source release into an existing database (insert new, update changed, mark used, rebuild filters, record the version). |
+| `merge.py` | Merges a newly downloaded source release into an existing database (update existing businesses, insert only fresh leads stamped with the batch, count the skipped ones, mark used, rebuild filters, record the version). |
 | `migrate_v2.py` | The one-time upgrade that was applied on 2026-09-14 (old `leads.duckdb` + ContactDirectory's `contacts.db` to the v2 layout). Kept for reference; it expects the SQLite file at `../ContactDirectory/data/contacts.db`. |
 | `test_api.py` | GUI-free regression test on a sampled fixture (never writes to the real database). |
 | `leads.duckdb` | The database (schema v2). This is the only copy of the data: the source files were removed after the build, so back it up rather than rebuild it. |
 
 ## Database layout (v2)
 
-- `places` - lead columns plus `category_list`, `industry_list`, `is_open`, `used_at`, `used_reason` (`import:<id>`, or `match:legacy` for matches found during migration).
+- `places` - lead columns plus `category_list`, `industry_list`, `is_open`, `used_at`, `used_reason` (`import:<id>`, or `match:legacy` for matches found during migration), `added_batch` (the `history.id` of the update that inserted the lead; NULL = original data). The app adds `added_batch` to an older database on start.
 - `used_contacts` - `id` plus the 27 ContactDirectory fields, `raw_data`, `created_at`, `import_id` (links to `history`).
-- `history` - `kind` is `import`, `export`, `filter` or `update`; `places_marked` says how many leads that action marked as used.
-- `meta` - `schema_version`, plus `source_version:<source>` and `source_updated_at:<source>` for each installed data release and the cached `update_check` result.
+- `history` - `kind` is `import`, `export`, `filter` or `update`; `places_marked` says how many leads that action marked as used. For `update`, `rows` is fresh leads added, `rows_skipped` the skipped ones, and `filters_json` holds the full merge counts (release date, installed at, existing / updated / unchanged, fresh, and each skip reason).
+- `meta` - `schema_version`, plus `source_version:<source>` and `source_updated_at:<source>` for each installed data release, the cached `update_check` result, and `ui_last_seen_batch` (the newest batch the app has already announced).
 - `catalogs` - `(kind, name)` for source, industry, source_type, source_category, category.
 - `dim_*` - per-source counts driving the All Leads filter lists. `meta` - `schema_version = 2`.
 

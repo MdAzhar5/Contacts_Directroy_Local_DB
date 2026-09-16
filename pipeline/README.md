@@ -34,7 +34,7 @@ If you ever paste a token somewhere it does not belong, revoke it on the Hugging
 | `python pipeline/update.py --set-version Overture 2026-08-19.0` | Record an installed version without downloading anything |
 | `pipeline\install_daily_check.bat` | Register a Windows task that checks daily at 09:30 and pops up when new data exists |
 
-Close the app first, or let the updater wait for it; the database is opened exclusively during the merge. Downloads resume if interrupted, so re-running the same command after a failure continues where it stopped. A merge is atomic: if anything fails, the database is left untouched.
+Close the app first, or let the updater wait for it; the database is opened exclusively during the merge. Downloads resume if interrupted, so re-running the same command after a failure continues where it stopped. A merge is atomic, including the filter-table rebuild: if anything fails, the database is left untouched. If only the removal of the raw download fails afterwards, the updater warns and says the update is installed; do not install the same release again.
 
 ### Where releases come from
 
@@ -46,15 +46,44 @@ Close the app first, or let the updater wait for it; the database is opened excl
 
 ### What merging does
 
-Rows are matched on `(source, source_id)`:
+Every row of the release is matched on `(source, source_id)`:
 
-- **new** businesses are inserted,
-- businesses whose contact details changed are **updated in place**, keeping `used_at`,
-- unchanged businesses are left alone,
-- any new or changed row whose phone or email is already in Used Data is **marked used**,
+- businesses **already in the database** are updated in place when their contact details changed (keeping `used_at`) and left alone otherwise. They are never skipped and never counted as fresh.
+- every other row is a **new candidate**, checked in this order:
+
+  | Check | Result |
+  |---|---|
+  | no valid phone and no valid email | skipped: no contact |
+  | phone or email already in All Leads (any source, including a phone or email an existing business drops in this release) | skipped: already in All Leads |
+  | phone or email already in Used Data | skipped: already in Used Data |
+  | shares a phone or email with another new row of the same release | the best row per phone, then per email, is kept (open first, then the most filled-in of phone/email/website/address/city, then source id); a row is skipped as a duplicate only when a kept row holds its phone or email, otherwise it competes again |
+  | anything left | **fresh**: inserted |
+
+  So a new row is fresh only when neither its phone nor its email is already known. Merging the same release twice adds nothing the second time.
+
+- existing rows whose phone or email is in Used Data are **marked used**,
 - the industry tree and the state/city lists are rebuilt, and the installed version is recorded in `meta`.
 
-The run is written to History as kind `update` with the counts.
+Skipped rows are not inserted, but nothing is lost: the extracted parquet stays in `data/<source>/<version>/`.
+
+Each fresh row is stamped with `places.added_batch` = the id of the run's History entry (`NULL` = data from the original build, before tracking). The app uses it for the **Data batch** filter in All Leads, the **Added in** preview column, the `added_in` export column and the **Installed updates** list on the Updates tab. Databases built before this column existed get it added automatically (the app when it starts, the updater at the start of the merge).
+
+The run is written to History as kind `update`: `rows` = fresh leads added, `rows_skipped` = old leads skipped, `places_marked` = marked used, and `filters_json` holds the full breakdown (`release_date`, `installed_at`, `total`, `existing`, `updated`, `unchanged`, `new_candidates`, `fresh`, `skipped_in_leads`, `skipped_in_used`, `skipped_duplicate`, `skipped_no_contact`, `skipped_total`, `marked`). `update.py` prints the same summary at the end, for example:
+
+```
+Overture release 2026-09-17 (2026-09-17.0), installed 2026-09-20
+  Fresh leads added (neither phone nor email seen before):       812,334
+  Old leads skipped:                                           9,012,345
+    phone or email already in All Leads:                       8,650,120
+    phone or email already in Used Data:                         301,774
+    duplicate phone/email inside this release:                    55,210
+    no valid phone or email:                                       5,241
+  Businesses already in the database (same source id): 2,104,551 (35,012 updated, 2,069,539 unchanged)
+  Marked used: 1,204
+  Overture rows in All Leads: 11,954,321 -> 12,766,655
+```
+
+With `--relaunch` (how the Updates tab starts it) the summary stays on screen for about 8 seconds, or until Enter, before the app reopens.
 
 ## Building a database from scratch
 
@@ -64,7 +93,7 @@ The run is written to History as kind `update` with the counts.
 | 2 | `python pipeline/build_geo_lookup.py` | step 1 | `geo_lookup.duckdb` (ZIP prefix and lat/lon cell to state, fills gaps in the other two sources) |
 | 3 | `python pipeline/overture_usa.py` | Overture place parquet files in `data/overture_data/` | `overture_usa_contacts.parquet` |
 | 4 | `python pipeline/osm_usa.py` | `.osm.pbf` extracts in `data/osm_data/` | `osm_usa_contacts.parquet` |
-| 5 | `python leads_app/build_db.py` | any of the outputs above | `leads_app/leads.duckdb` |
+| 5 | `python leads_app/build_db.py` (add `--replace` to overwrite an existing database; back it up first) | any of the outputs above | `leads_app/leads.duckdb` |
 
 Steps 3 and 4 can instead be done with `update.py --update <source>`, which downloads the input for you.
 
@@ -75,7 +104,7 @@ Steps 3 and 4 can instead be done with `update.py --update <source>`, which down
 | `sources.py` | Where each source publishes releases, how to find the newest one, resumable download |
 | `extract.py` | The three extractors that turn a raw release into the common 19-column contact parquet |
 | `update.py` | The command-line updater: check, download, extract, merge, relaunch |
-| `../leads_app/merge.py` | The merge itself (insert / update / mark used / rebuild / record version) |
+| `../leads_app/merge.py` | The merge itself (update existing / add fresh, skip old / mark used / rebuild / record version) |
 | `fsq_usa_to_csv.py`, `overture_usa.py`, `osm_usa.py`, `build_geo_lookup.py` | Thin wrappers for building from scratch |
 
 ## Common layout

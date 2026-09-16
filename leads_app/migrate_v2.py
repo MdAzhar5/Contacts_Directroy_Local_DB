@@ -4,7 +4,7 @@ ContactDirectory's SQLite contacts.db. The original files are only read.
 
   places          25M open-source leads. phone -> canonical 10 digits (else NULL),
                   email lowercased, blank strings -> NULL, state codes normalized,
-                  new columns used_at / used_reason.
+                  new columns used_at / used_reason / added_batch (NULL = original data).
   used_contacts   1.7M contacts from ContactDirectory (same 27 fields + import_id).
   history         import_history (kind='import') and future exports (kind='export').
   catalogs        sources / industries / source_types / source_categories / categories.
@@ -63,7 +63,7 @@ def main() -> None:
                nullif(trim(zip), '')                AS zip,
                country, latitude, longitude, categories, instagram, twitter, facebook_id,
                date_created, date_refreshed, date_closed, category_list, industry_list, is_open,
-               NULL::VARCHAR AS used_at, NULL::VARCHAR AS used_reason
+               NULL::VARCHAR AS used_at, NULL::VARCHAR AS used_reason, NULL::BIGINT AS added_batch
         FROM old.places
     """)
     old_phone = con.execute("SELECT count(phone) FROM old.places").fetchone()[0]

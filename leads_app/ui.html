@@ -55,6 +55,9 @@
   td.closed { color: #b91c1c; }
   td.src { color: var(--muted); font-size: 11px; }
   td.usedcell { color: var(--used); font-size: 11px; }
+  td.wrap { white-space: normal; }
+  td.num { text-align: right; }
+  .small-muted { color: var(--muted); font-size: 11px; }
   .pager { display: flex; gap: 8px; align-items: center; padding: 8px 16px; background: var(--panel); border-top: 1px solid var(--border); color: var(--muted); }
   .toast { position: fixed; bottom: 18px; right: 18px; background: #111827; color: #fff; padding: 10px 14px; border-radius: 6px; max-width: 520px; display: none; z-index: 30; white-space: pre-line; }
   .toast.ok { background: var(--ok); }
@@ -116,11 +119,25 @@
       <div class="list" id="sources" style="max-height:100px"></div>
     </section>
     <section>
+      <h3>Data batch <a onclick="clearSel('batches')">clear</a></h3>
+      <div class="list" id="batches" style="max-height:130px"></div>
+      <div class="muted" id="batchNote" style="font-size:11px;margin-top:5px"></div>
+    </section>
+    <section>
       <h3>Industry <a onclick="clearSel('tree')">clear</a></h3>
       <input type="search" id="treeSearch" placeholder="Search sub-industries, e.g. dentist, plumber, pizza">
       <div class="list tree" id="tree" style="max-height:280px"></div>
       <div class="chips" id="treeChips"></div>
       <div class="muted" style="font-size:11px;margin-top:5px">Tick a main industry to take everything under it, or click ▸ to open it and tick specific sub-industries.</div>
+    </section>
+    <section>
+      <h3>Industry keywords <a onclick="clearKeywords()">clear</a></h3>
+      <input type="text" id="keywords" placeholder="Match any, e.g. security, alarm, surveillance">
+      <input type="text" id="exclude" placeholder="Exclude, e.g. social security, bank" style="margin-top:6px">
+      <div class="checks" style="margin-top:6px">
+        <label><input type="checkbox" id="kw_names" checked> Also match business names</label>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:5px">Each source names industries differently, so one tree item holds only part of an industry. Keywords search the categories of all sources at once (whole words, plurals included). Combined with ticked industries as either/or.</div>
     </section>
     <section>
       <h3>Country</h3>
@@ -317,16 +334,22 @@
         <span class="spacer"></span>
         <button class="small" id="updCheckBtn" onclick="loadUpdates(true)">Check now</button>
       </div>
-      <p class="hint" style="margin-top:8px">Foursquare, Overture and OpenStreetMap publish new releases regularly. The app checks once a day when it starts. A newer release can be downloaded and merged into All Leads: new businesses are added, changed ones updated, nothing is duplicated, and your Used Data marks are kept.</p>
-      <div class="preview" style="max-height:none"><table id="updGrid"><thead><tr><th>Source</th><th>Installed</th><th>Last updated</th><th>Latest available</th><th>Download</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
+      <p class="hint" style="margin-top:8px">Foursquare, Overture and OpenStreetMap publish new releases regularly. The app checks once a day when it starts. A newer release can be downloaded and merged into All Leads: only fresh leads are added (a phone or email not already in All Leads or Used Data), the rest are skipped and counted, businesses you already have are updated in place, and your Used Data marks are kept.</p>
+      <div class="preview" style="max-height:none"><table id="updGrid"><thead><tr><th>Source</th><th>Installed release</th><th>Installed on</th><th>Latest release</th><th>Newer by</th><th>Download</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Installed updates</h2>
+      <p class="hint">Each installed release is a data batch. Fresh leads are stamped with their batch, so you can compare the latest batch with earlier ones: pick it under <b>Data batch</b> in All Leads, or click View in All Leads.</p>
+      <div class="preview" style="max-height:none"><table id="batchGrid"><thead><tr><th>Source</th><th>Release date</th><th>Installed on</th><th style="text-align:right">Fresh added</th><th>Old skipped</th><th>Existing updated / unchanged</th><th>Still in All Leads (unused)</th><th></th></tr></thead><tbody></tbody></table></div>
     </div>
     <div class="card">
       <h2>How an update runs</h2>
       <ol style="margin:0;padding-left:20px;line-height:1.8">
         <li>Click <b>Download &amp; install</b>. The updater opens in its own console window and this app closes so the database is free.</li>
         <li>The release is downloaded into <code>data\</code> (10 to 12 GB, resumable), then USA contacts are extracted and normalized.</li>
-        <li>Rows are matched by source id: new ones inserted, changed ones updated, unchanged ones untouched. Leads whose phone or email is in Used Data are marked used.</li>
-        <li>Filter tables are rebuilt, the raw download is deleted, and the app starts again. The run appears in History as kind "update".</li>
+        <li>Businesses already in All Leads (same source id) are updated if their details changed, otherwise left untouched.</li>
+        <li>Every other row is a candidate. It is added only when its phone or email is not already in All Leads or Used Data. Rows with no valid phone or email, rows whose phone or email is already known, and repeats of the same phone or email inside the release are skipped and counted.</li>
+        <li>Fresh leads are stamped with the update, filter tables are rebuilt, the raw download is deleted, and the app starts again showing how many fresh leads were added and how many old ones were skipped. The run appears below, under Data batch in All Leads, and in History as kind "update".</li>
       </ol>
       <p class="hint" style="margin:10px 0 0">Foursquare needs a Hugging Face token in the git-ignored <code>.env</code> file (copy <code>.env.example</code> and set <code>HF_TOKEN</code>). Overture and OpenStreetMap need no credentials. To be told about new releases without opening the app, run <code>pipeline\install_daily_check.bat</code> once.</p>
     </div>
@@ -357,9 +380,9 @@ const MAPPING_FIELDS = [['name','Name / Business name'],['first_name','First nam
 const CATALOGS = [['source','Source',true],['industry','Industry',true],['source_type','Source type',true],['source_category','Source category',true],['category','Category',false]];
 
 // selections: All Leads keys + Used Data keys prefixed u_
-const sel = { sources: new Set(), tree: new Set(), states: new Set(), cities: new Set(), countries: new Set() };
+const sel = { sources: new Set(), batches: new Set(), tree: new Set(), states: new Set(), cities: new Set(), countries: new Set() };
 USED_FACETS.forEach(f => sel['u_' + f] = new Set());
-const labels = { tree: {}, cities: {}, categories: {} };
+const labels = { tree: {}, cities: {}, categories: {}, batches: {} };
 let offset = 0, lastCount = 0, timer = null, ready = false, allStates = [], allSources = [], options = {};
 let uOffset = 0, uLastCount = 0, uTimer = null;
 
@@ -371,23 +394,48 @@ function showTab(name) {
   if (name === 'used' && !usedLoaded) { usedLoaded = true; usedRefresh(); }
   if (name === 'history') loadHistory();
   if (name === 'import') loadCatalogs();
-  if (name === 'updates') loadUpdates(false);
+  if (name === 'updates') { batchNews = false; loadUpdates(false); }
 }
 
 // ================================================================ DATA UPDATES
-let updState = null;
+let updState = null, batchNews = false;
+const daysText = (n, available) => n == null || n < 0 ? '' : n === 0 ? (available ? 'same day' : '') : `${fmt(n)} day${n === 1 ? '' : 's'}`;
+const skippedParts = b => [`${fmt(b.skipped_in_leads)} phone or email already in All Leads`, `${fmt(b.skipped_in_used)} already in Used Data`,
+  `${fmt(b.skipped_duplicate)} repeated inside the release`, `${fmt(b.skipped_no_contact)} with no valid phone or email`];
 function renderUpdates(st) {
   updState = st;
   const tbody = $('updGrid').querySelector('tbody');
   tbody.innerHTML = st.results.map(r => {
     const status = r.error ? `<span style="color:#b91c1c" title="${esc(r.error)}">check failed: ${esc(r.error.slice(0, 90))}</span>`
-      : r.available ? '<b style="color:var(--warn)">new release available</b>' : (r.version ? 'up to date' : 'not checked yet');
+      : r.available ? `<b style="color:var(--warn)">new release available</b>${r.latest_release_date ? ` <span class="muted">· released ${esc(r.latest_release_date)}</span>` : ''}`
+      : (r.version ? 'up to date' : 'not checked yet');
     const btn = r.available ? `<button class="small primary" onclick="askUpdate('${esc(r.source)}')">Download &amp; install</button>` : '';
-    return `<tr><td><b>${esc(r.source)}</b></td><td>${esc(r.installed || 'not recorded')}</td><td>${esc(r.updated_at ? r.updated_at.slice(0, 10) : '')}</td>` +
-      `<td>${esc(r.version || '')}<span class="muted"> ${esc(r.note || '')}</span></td><td>${esc(r.size_text)}</td><td>${status}</td><td>${btn}</td></tr>`;
+    return `<tr><td><b>${esc(r.source)}</b></td><td title="${esc(r.installed || '')}">${esc(r.installed_release_date || 'not recorded')}</td>` +
+      `<td>${esc(r.updated_at ? r.updated_at.slice(0, 10) : '')}</td>` +
+      `<td title="${esc(r.version || '')}">${esc(r.latest_release_date || '')}<span class="muted"> ${esc(r.note || '')}</span></td>` +
+      `<td>${esc(daysText(r.days_newer, r.available))}</td><td>${esc(r.size_text)}</td><td>${status}</td><td>${btn}</td></tr>`;
   }).join('');
+  renderBatchGrid(st.batches || []);
   $('updNote').textContent = st.checked_at ? `Last checked ${st.checked_at.replace('T', ' ').slice(0, 16)} UTC` : 'Not checked yet';
-  $('updDot').style.display = st.available.length ? '' : 'none';
+  $('updDot').style.display = st.available.length || batchNews ? '' : 'none';
+}
+function renderBatchGrid(batches) {
+  const nt = '<span class="muted">not tracked</span>';
+  $('batchGrid').querySelector('tbody').innerHTML = batches.map(b => {
+    const skipped = b.legacy ? nt : `${fmt(b.skipped_total)}<div class="small-muted">${esc(skippedParts(b).join(' · '))}</div>`;
+    const fresh = b.legacy ? `<span class="muted" title="Installed before batch tracking: ${esc(fmt(b.new_candidates))} new businesses were added and count as original data">not tracked</span>` : `<b>${fmt(b.fresh)}</b>`;
+    const still = b.legacy ? nt : `${fmt(b.in_db_unused)} <span class="muted">of ${fmt(b.in_db)}</span>`;
+    const btn = b.legacy ? '' : `<button class="small" onclick="viewBatch(${Number(b.id)})">View in All Leads</button>`;
+    return `<tr><td><b>${esc(b.source)}</b></td><td title="${esc(b.version || '')}">${esc(b.release_date || '')}</td>` +
+      `<td title="${esc(b.installed_at || '')}">${esc((b.installed_at || '').slice(0, 10))}</td><td class="num">${fresh}</td>` +
+      `<td class="wrap" style="min-width:260px" title="${b.legacy ? '' : esc(skippedParts(b).join('\n'))}">${skipped}</td>` +
+      `<td>${fmt(b.updated)} / ${fmt(b.unchanged)}</td><td>${still}</td><td>${btn}</td></tr>`;
+  }).join('') || '<tr><td colspan="8" class="muted" style="padding:14px">No updates installed yet</td></tr>';
+}
+// pick one batch in All Leads so its fresh leads can be compared with earlier data
+function viewBatch(id) {
+  sel.batches.clear(); sel.batches.add(String(id));
+  renderBatches(); showTab('leads'); offset = 0; refresh();
 }
 async function loadUpdates(force) {
   if (!force && updState && !updState.stale) { renderUpdates(updState); return; }
@@ -401,8 +449,15 @@ async function loadUpdates(force) {
 }
 function askUpdate(source) {
   const r = updState.results.find(x => x.source === source);
+  const days = daysText(r.days_newer, r.available);
   $('updTitle').textContent = `Update ${source} to ${r.version}?`;
-  $('updText').textContent = `This downloads ${r.size_text || 'the release'} (${r.note || ''}), extracts USA contacts and merges them into All Leads.\n\nLeads Explorer will close while the updater runs in a separate window, then start again automatically. Keep the computer on; the download can take a while and resumes if interrupted.`;
+  $('updText').textContent = `Installed release: ${r.installed_release_date || 'not recorded'}${r.updated_at ? ` (installed on ${r.updated_at.slice(0, 10)})` : ''}\n` +
+    `Latest release: ${r.latest_release_date || r.version}${days ? ` (${days} newer)` : ''}\n\n` +
+    `This downloads ${r.size_text || 'the release'}${r.note ? ` (${r.note})` : ''}, extracts USA contacts and merges them into All Leads. ` +
+    `Only leads whose phone or email is not already in All Leads or Used Data are added; the rest are skipped and counted. ` +
+    `Businesses already in All Leads are updated in place. When it finishes you will see how many fresh leads were added and how many old ones were skipped, ` +
+    `and the new batch can be picked under Data batch in All Leads.\n\n` +
+    `Leads Explorer will close while the updater runs in a separate window, then start again automatically. Keep the computer on; the download can take a while and resumes if interrupted.`;
   $('updGo').onclick = async () => {
     $('updModal').style.display = 'none';
     const res = await api().start_update(source);
@@ -469,9 +524,9 @@ document.body.addEventListener('click', e => {
 
 let dTimer = null;
 function debounce(fn) { clearTimeout(dTimer); dTimer = setTimeout(fn, 250); }
-function toast(msg, ok) {
+function toast(msg, ok, ms) {
   const t = $('toast'); t.textContent = msg; t.className = 'toast' + (ok ? ' ok' : ''); t.style.display = 'block';
-  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 9000);
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', ms || 9000);
 }
 function previewTable(container, headers, rows) {
   container.innerHTML = `<table><thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${
@@ -489,8 +544,9 @@ async function refreshTotals() {
 const srcList = () => [...sel.sources];
 function filters() {
   return {
-    sources: srcList(), tree: [...sel.tree], states: [...sel.states],
+    sources: srcList(), batches: [...sel.batches], tree: [...sel.tree], states: [...sel.states],
     cities: [...sel.cities], countries: [...sel.countries],
+    keywords: $('keywords').value, exclude: $('exclude').value, kw_names: $('kw_names').checked,
     name: $('name').value, zip: $('zip').value,
     has_phone: $('has_phone').checked, has_email: $('has_email').checked,
     has_website: $('has_website').checked, has_facebook: $('has_facebook').checked,
@@ -498,7 +554,8 @@ function filters() {
     usage: document.querySelector('input[name=usage]:checked').value,
   };
 }
-['name', 'zip'].forEach(id => $(id).addEventListener('input', schedule));
+['name', 'zip', 'keywords', 'exclude'].forEach(id => $(id).addEventListener('input', schedule));
+function clearKeywords() { $('keywords').value = ''; $('exclude').value = ''; $('kw_names').checked = true; schedule(); }
 $('treeSearch').addEventListener('input', () => debounce(renderTree));
 $('citySearch').addEventListener('input', () => debounce(loadCities));
 $('stateSearch').addEventListener('input', renderStates);
@@ -508,18 +565,20 @@ function clearSel(key) {
   sel[key].clear();
   if (key.startsWith('u_')) { uOffset = 0; usedSchedule(); return; }
   if (key === 'sources') { renderList('sources', allSources, 'sources'); loadTree(); loadStates(); loadCities(); }
+  if (key === 'batches') renderBatches();
   if (key === 'tree') { renderChips('treeChips', 'tree'); renderTree(); }
   if (key === 'states') { renderStates(); loadCities(); }
   if (key === 'cities') { renderChips('cityChips', 'cities'); loadCities(); }
   schedule();
 }
 function resetAll() {
-  ['sources','tree','states','cities','countries'].forEach(k => sel[k].clear());
-  ['name', 'zip', 'treeSearch', 'citySearch', 'stateSearch'].forEach(id => $(id).value = '');
+  ['sources','batches','tree','states','cities','countries'].forEach(k => sel[k].clear());
+  ['name', 'zip', 'keywords', 'exclude', 'treeSearch', 'citySearch', 'stateSearch'].forEach(id => $(id).value = '');
   ['has_phone', 'has_email', 'has_website', 'has_facebook'].forEach(id => $(id).checked = false);
+  $('kw_names').checked = true;
   $('open_only').checked = true;
   document.querySelector('input[name=usage][value=unused]').checked = true;
-  renderList('sources', allSources, 'sources');
+  renderList('sources', allSources, 'sources'); renderBatches();
   renderChips('treeChips', 'tree'); renderChips('cityChips', 'cities');
   treeOpen.clear();
   loadTree(); loadStates(); loadCities(); schedule();
@@ -531,9 +590,45 @@ async function init() {
   renderList('sources', allSources, 'sources');
   renderList('countries', options.countries, 'countries');
   ready = true;
-  await Promise.all([loadTree(), loadStates(), loadCities()]);
+  await Promise.all([loadTree(), loadStates(), loadCities(), loadBatches()]);
   refresh();
+  announceBatches();
   setTimeout(() => loadUpdates(false), 1500);   // daily online check, off the critical path
+}
+
+// ---- data batches: original data plus one entry per tracked update (fresh leads it added)
+let batchInfo = { batches: [], original: { n: 0, by_source: [] } };
+const batchById = id => batchInfo.batches.find(b => b.id === Number(id));
+const batchShort = v => { if (v == null) return 'original'; const b = batchById(v); return b ? `${b.source} ${b.release_date || ''}`.trim() : `update ${v}`; };
+async function loadBatches() {
+  try { batchInfo = await api().update_batches(); } catch (e) { console.error(e); }
+  renderBatches();
+}
+function renderBatches() {
+  const tracked = batchInfo.batches.filter(b => !b.legacy);
+  const items = tracked.length ? [{ v: 'original', label: 'Original data (before updates)', n: batchInfo.original.n }].concat(
+    tracked.map(b => ({ v: String(b.id), label: `${b.source} ${b.release_date || ''}`.trim(), sub: 'installed ' + (b.installed_at || '').slice(0, 10), title: b.label, n: b.in_db }))) : [];
+  for (const v of [...sel.batches]) if (!items.some(it => it.v === v)) sel.batches.delete(v);
+  $('batches').style.display = items.length ? '' : 'none';
+  $('batches').innerHTML = items.map(it => `<label title="${esc(it.title || it.label)}"><input type="checkbox" ${sel.batches.has(it.v) ? 'checked' : ''} data-key="batches" data-v="${esc(it.v)}" data-label="${esc(it.label)}">` +
+    `<span class="v">${esc(it.label)}</span>${it.sub ? `<span class="sub">${esc(it.sub)}</span>` : ''}<span class="n">${fmt(it.n)}</span></label>`).join('');
+  $('batchNote').textContent = items.length ? 'Tick a batch to see only the fresh leads that update added, or Original for the data from before any update.'
+    : 'No tracked updates installed yet, so every lead is original data. Each future update becomes a batch you can pick here.';
+}
+// after an update relaunches the app: say what the new batch added (once per batch)
+function announceBatches() {
+  const newest = batchInfo.batches[0];
+  if (!newest) return;
+  let seen = Number(batchInfo.last_seen) || 0;   // meta copy: the webview may not keep localStorage between launches
+  try { seen = Math.max(seen, Number(localStorage.getItem('leads.lastSeenBatch')) || 0); } catch (e) {}
+  if (newest.id <= seen) return;
+  const lines = batchInfo.batches.filter(b => b.id > seen && !b.legacy)
+    .map(b => `${b.source} update installed: ${fmt(b.fresh)} fresh leads added, ${fmt(b.skipped_total)} old skipped`);
+  try { localStorage.setItem('leads.lastSeenBatch', String(newest.id)); } catch (e) {}
+  api().mark_batch_seen(newest.id).catch(e => console.error(e));
+  if (!lines.length) return;
+  toast(lines.join('\n') + '\nSee Updates > Installed updates for the breakdown.', true, 20000);
+  batchNews = true; $('updDot').style.display = '';
 }
 
 // ---- industry tree: main industries at the top, ▸ opens sub-industries; a ticked parent covers its children
@@ -598,14 +693,15 @@ async function refresh() {
   $('cEmail').textContent = fmt(c.email); $('cWeb').textContent = fmt(c.website); $('cFb').textContent = fmt(c.facebook);
   $('cBySrc').textContent = (c.by_source || []).map(s => `${s.v} ${fmt(s.n)}`).join(' · ');
   const thead = $('grid').querySelector('thead'), tbody = $('grid').querySelector('tbody');
-  thead.innerHTML = '<tr>' + p.columns.map(c => `<th>${esc(c.replace(/_/g, ' '))}</th>`).join('') + '</tr>';
+  thead.innerHTML = '<tr>' + p.columns.map(c => `<th>${esc(c === 'added_batch' ? 'Added in' : c.replace(/_/g, ' '))}</th>`).join('') + '</tr>';
   tbody.innerHTML = p.rows.map(r => '<tr>' + r.map((v, i) => {
     const col = p.columns[i];
+    if (col === 'added_batch') { const b = v == null ? null : batchById(v); return `<td class="src" title="${esc(b ? b.label : batchShort(v))}">${esc(batchShort(v))}</td>`; }
     const cls = col === 'date_closed' && v ? 'closed' : col === 'source' ? 'src' : col === 'used_at' ? 'usedcell' : '';
     const text = col === 'used_at' && v ? 'used ' + String(v).slice(0, 10) : v;
     return `<td class="${cls}" title="${esc(v)}">${esc(text)}</td>`;
   }).join('') + '</tr>').join('')
-    || '<tr><td colspan="12" style="padding:30px;text-align:center;color:var(--muted)">No rows match these filters</td></tr>';
+    || `<tr><td colspan="${p.columns.length}" style="padding:30px;text-align:center;color:var(--muted)">No rows match these filters</td></tr>`;
   const from = lastCount ? offset + 1 : 0, to = Math.min(offset + 200, lastCount);
   $('pageInfo').textContent = `Rows ${fmt(from)}–${fmt(to)} of ${fmt(lastCount)}`;
   $('prevBtn').disabled = offset === 0; $('nextBtn').disabled = to >= lastCount;

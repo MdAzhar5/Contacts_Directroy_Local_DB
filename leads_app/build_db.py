@@ -89,7 +89,7 @@ def main() -> None:
                CASE WHEN categories IS NULL THEN []::VARCHAR[]
                     ELSE list_distinct(list_transform(string_split(categories, ' | '), x -> split_part(trim(x), ' > ', 1))) END AS industry_list,
                (date_closed IS NULL) AS is_open,
-               NULL::VARCHAR AS used_at, NULL::VARCHAR AS used_reason
+               NULL::VARCHAR AS used_at, NULL::VARCHAR AS used_reason, NULL::BIGINT AS added_batch
         FROM ({' UNION ALL '.join(selects)})
     """)
     for src, n in con.execute("SELECT source, count(*) FROM places GROUP BY 1 ORDER BY 2 DESC").fetchall():

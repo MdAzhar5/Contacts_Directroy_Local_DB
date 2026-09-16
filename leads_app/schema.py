@@ -120,9 +120,24 @@ CREATE TABLE IF NOT EXISTS places (
     address VARCHAR, city VARCHAR, state VARCHAR, zip VARCHAR, country VARCHAR,
     latitude DOUBLE, longitude DOUBLE, categories VARCHAR, instagram VARCHAR, twitter VARCHAR, facebook_id VARCHAR,
     date_created VARCHAR, date_refreshed VARCHAR, date_closed VARCHAR,
-    category_list VARCHAR[], industry_list VARCHAR[], is_open BOOLEAN, used_at VARCHAR, used_reason VARCHAR
+    category_list VARCHAR[], industry_list VARCHAR[], is_open BOOLEAN, used_at VARCHAR, used_reason VARCHAR,
+    added_batch BIGINT
 )
 """
+# added_batch: NULL = part of the original build; otherwise history.id of the kind='update' run that inserted the row.
+
+
+def ensure_places_columns(con) -> bool:
+    """Add columns introduced after a database was built (added_batch) to an existing places table.
+    Idempotent; returns True when the table was altered."""
+    cols = {r[0] for r in con.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_catalog = current_database() AND table_schema = 'main' AND table_name = 'places'
+    """).fetchall()}
+    if not cols or "added_batch" in cols:
+        return False
+    con.execute("ALTER TABLE places ADD COLUMN added_batch BIGINT")
+    return True
 
 
 def create_empty_db(path, stamp: str = "") -> None:

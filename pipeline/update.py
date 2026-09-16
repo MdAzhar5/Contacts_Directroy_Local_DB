@@ -9,7 +9,9 @@ OpenStreetMap, download them, extract USA contacts, and merge them into leads.du
         [--version 2026-08-19.0] [--yes] [--relaunch] [--keep-download] [--from-file path.parquet]
 
 The app must be closed while merging (the database is opened exclusively); the updater
-waits for it. With --relaunch the app is started again when the merge is done.
+waits for it. A new lead is added only when neither its phone nor its email is already in All
+Leads or Used Data; the summary printed at the end says how many were added and how many were skipped.
+With --relaunch the app is started again when the merge is done (after ~8 seconds, or Enter).
 """
 from __future__ import annotations
 
@@ -40,6 +42,8 @@ DB = Path(os.environ.get("LEADS_DB", str(APP_DIR / "leads.duckdb")))
 from extract import EXTRACTORS, OUTPUT_NAMES  # noqa: E402
 from merge import get_versions, merge, set_meta  # noqa: E402
 from schema import install_macros  # noqa: E402
+
+merge_done = False   # set once merge() has committed in this run, so failure messages do not claim nothing changed
 
 
 def utc_now() -> str:
@@ -108,6 +112,7 @@ def notify(results: list[dict]) -> None:
 
 def run_update(source: str, version: str | None, assume_yes: bool, keep_download: bool, from_file: str | None,
                token: str | None = None) -> dict:
+    global merge_done
     if source not in sources.SOURCES:
         raise SystemExit(f"Unknown source {source}. Choose one of: {', '.join(sources.SOURCES)}")
     t0 = time.time()
@@ -144,15 +149,58 @@ def run_update(source: str, version: str | None, assume_yes: bool, keep_download
         stats = merge(con, source, parquet, version)
     finally:
         con.close()
+    merge_done = True
     if raw is not None and not keep_download:
         target = raw if raw.is_dir() else raw.parent
-        for f in Path(target).rglob("*"):
-            if f.is_file() and f.suffix in (".parquet", ".pbf", ".part") and f.name != parquet.name and f != parquet:
-                f.unlink()
-        print("  raw download removed (extracted parquet kept)")
+        try:
+            for f in Path(target).rglob("*"):
+                if f.is_file() and f.suffix in (".parquet", ".pbf", ".part") and f.name != parquet.name and f != parquet:
+                    f.unlink()
+            print("  raw download removed (extracted parquet kept)")
+        except OSError as exc:     # e.g. OneDrive or antivirus still holds a file; the update itself is installed
+            print(f"  WARNING: could not remove the raw download ({exc}). The update is installed; delete {target} by hand.")
     stats["minutes"] = round((time.time() - t0) / 60, 1)
     print(f"\nUpdate complete in {stats['minutes']} min.")
+    print_summary(stats)
     return stats
+
+
+def print_summary(s: dict) -> None:
+    """What the merge added and skipped, in plain words."""
+    lines = [
+        ("Fresh leads added (neither phone nor email seen before):", s["fresh"]),
+        ("Old leads skipped:", s["skipped_total"]),
+        ("  phone or email already in All Leads:", s["skipped_in_leads"]),
+        ("  phone or email already in Used Data:", s["skipped_in_used"]),
+        ("  duplicate phone/email inside this release:", s["skipped_duplicate"]),
+        ("  no valid phone or email:", s["skipped_no_contact"]),
+    ]
+    width = max(len(label) for label, _ in lines) + 2
+    print(f"\n{s['source']} release {s['release_date']} ({s['version']}), installed {s['installed_at'][:10]}")
+    for label, n in lines:
+        print(f"  {label:<{width}}{n:>12,}")
+    print(f"  Businesses already in the database (same source id): {s['existing']:,} "
+          f"({s['updated']:,} updated, {s['unchanged']:,} unchanged)")
+    print(f"  Marked used: {s['marked']:,}")
+    print(f"  {s['source']} rows in All Leads: {s['before']:,} -> {s['after']:,}")
+
+
+def pause(seconds: int = 8) -> None:
+    """Leave the summary on screen: return after `seconds`, or as soon as Enter is pressed."""
+    print(f"\nReopening Leads Explorer in {seconds} seconds (press Enter to reopen now) ...", flush=True)
+    try:
+        import msvcrt
+    except ImportError:
+        time.sleep(seconds)
+        return
+    end = time.time() + seconds
+    try:
+        while time.time() < end:
+            if msvcrt.kbhit() and msvcrt.getwch() in ("\r", "\n"):
+                return
+            time.sleep(0.1)
+    except KeyboardInterrupt:      # the merge is already committed; just reopen
+        pass
 
 
 def relaunch_app() -> None:
@@ -191,15 +239,27 @@ def main() -> None:
             notify(results)
         return
     # The app closes itself before launching this, so it must be started again on every exit path.
+    global merge_done
+    merge_done = False
     try:
-        run_update(a.update, a.version, a.yes, a.keep_download, a.from_file)
+        stats = run_update(a.update, a.version, a.yes, a.keep_download, a.from_file)
+        if a.relaunch and not stats.get("skipped"):
+            pause()
     except KeyboardInterrupt:
-        print("\nCancelled. Nothing was changed in the database; re-run the same command to resume the download.")
+        if merge_done:
+            print("\nStopped. The update is already installed; only the clean-up after it was cut short.")
+        else:
+            print("\nCancelled. Nothing was changed in the database; re-run the same command to resume the download.")
         if a.relaunch:
             input("Press Enter to reopen Leads Explorer ...")
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:     # SystemExit: e.g. "No parquet files in ...", "Gave up waiting ..."
+        if isinstance(exc, SystemExit) and not a.relaunch:
+            raise
         print(f"\nUPDATE FAILED: {exc}")
-        print("The database was not changed. Re-run the same command to try again (downloads resume).")
+        if merge_done:
+            print("The new data was already merged into the database; do not install this release again.")
+        else:
+            print("The database was not changed. Re-run the same command to try again (downloads resume).")
         if not a.relaunch:
             raise
         input("Press Enter to reopen Leads Explorer ...")
