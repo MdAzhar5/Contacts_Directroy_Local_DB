@@ -95,12 +95,35 @@ CREATE TABLE IF NOT EXISTS history (
 
 CATALOGS_DDL = "CREATE TABLE IF NOT EXISTS catalogs (kind VARCHAR, name VARCHAR, created_at VARCHAR)"
 
+# NPI (CMS NPPES) provider details kept beside places: one row per NPI lead, source_id = places.source_id
+# where places.source = 'NPI'. Only the important NPPES fields; the lead itself (name, phone, address,
+# categories, dates) lives in places like every other source.
+NPI_SOURCE = "NPI"
+NPI_DETAIL_COLUMNS = ["npi", "provider_type", "credential", "specialty", "taxonomy_code",
+                      "contact_name", "contact_title", "contact_phone"]
+NPI_DETAILS_DDL = ("CREATE TABLE IF NOT EXISTS npi_details (source_id VARCHAR, npi VARCHAR, provider_type VARCHAR, "
+                   "credential VARCHAR, specialty VARCHAR, taxonomy_code VARCHAR, contact_name VARCHAR, "
+                   "contact_title VARCHAR, contact_phone VARCHAR)")
+
+
+def ensure_npi_details(con) -> bool:
+    """Create npi_details in a database built before the NPI source existed. Idempotent; returns True when created."""
+    exists = con.execute("""
+        SELECT count(*) FROM information_schema.tables
+        WHERE table_catalog = current_database() AND table_schema = 'main' AND table_name = 'npi_details'
+    """).fetchone()[0]
+    if exists:
+        return False
+    con.execute(NPI_DETAILS_DDL)
+    return True
+
 
 def create_stores(con, used_seq_start: int = 1, history_seq_start: int = 1, stamp: str = "") -> None:
-    """Create the Used Data / history / catalog tables, sequences, indexes and meta for a v2 database."""
+    """Create the Used Data / history / catalog / NPI detail tables, sequences, indexes and meta for a v2 database."""
     con.execute(USED_CONTACTS_DDL)
     con.execute(HISTORY_DDL)
     con.execute(CATALOGS_DDL)
+    ensure_npi_details(con)
     con.execute(f"CREATE SEQUENCE IF NOT EXISTS seq_used_contacts START {int(used_seq_start)}")
     con.execute(f"CREATE SEQUENCE IF NOT EXISTS seq_history START {int(history_seq_start)}")
     con.execute("CREATE INDEX IF NOT EXISTS idx_used_phone ON used_contacts(phone)")
@@ -125,6 +148,7 @@ CREATE TABLE IF NOT EXISTS places (
 )
 """
 # added_batch: NULL = part of the original build; otherwise history.id of the kind='update' run that inserted the row.
+# source: Foursquare, Overture, OpenStreetMap or NPI (NPI rows have their provider details in npi_details).
 
 
 def ensure_places_columns(con) -> bool:

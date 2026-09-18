@@ -107,6 +107,11 @@
 <main id="tab-leads" class="tab active">
   <aside>
     <section>
+      <h3>Find one lead <a onclick="clearLookup()">clear</a></h3>
+      <input type="search" id="lookup" placeholder="NPI number, phone or email">
+      <div class="muted" id="lookupInfo" style="font-size:11px;margin-top:5px">Exact match on a 10-digit NPI or phone, or an email address. While this box is filled, all other filters are ignored.</div>
+    </section>
+    <section>
       <h3>Usage</h3>
       <div class="checks">
         <label><input type="radio" name="usage" value="unused" checked> Unused only</label>
@@ -116,7 +121,16 @@
     </section>
     <section>
       <h3>Source <a onclick="clearSel('sources')">clear</a></h3>
-      <div class="list" id="sources" style="max-height:100px"></div>
+      <div class="list" id="sources" style="max-height:120px"></div>
+    </section>
+    <section id="npiTypeBox" style="display:none">
+      <h3>NPI provider type</h3>
+      <div class="checks">
+        <label><input type="radio" name="npi_type" value="" checked> All sources and types</label>
+        <label><input type="radio" name="npi_type" value="Individual"> NPI individuals <span class="muted" id="npiInd"></span></label>
+        <label><input type="radio" name="npi_type" value="Organization"> NPI organizations <span class="muted" id="npiOrg"></span></label>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:5px">Individuals are practitioners (doctors, nurses, therapists…); organizations are clinics, hospitals, pharmacies, agencies. Choosing one shows NPI leads only.</div>
     </section>
     <section>
       <h3>Data batch <a onclick="clearSel('batches')">clear</a></h3>
@@ -181,12 +195,17 @@
       <button class="primary" id="exportBtn" onclick="doExport()">⬇ Download CSV</button>
     </div>
     <div class="tablewrap"><table id="grid"><thead></thead><tbody></tbody></table></div>
+    <!-- Find one lead: the same phone / email / NPI in Used Data, shown apart from the All Leads rows above -->
+    <div id="lookupUsed" style="display:none;border-top:2px solid var(--border);background:var(--panel)">
+      <div style="padding:8px 16px"><b id="lookupUsedTitle"></b> <span class="muted" id="lookupUsedNote"></span></div>
+      <div style="max-height:240px;overflow:auto"><table id="lookupUsedGrid"><thead></thead><tbody></tbody></table></div>
+    </div>
     <div class="pager">
       <button onclick="page(-1)" id="prevBtn">◀ Prev</button>
       <span id="pageInfo">Preview</span>
       <button onclick="page(1)" id="nextBtn">Next ▶</button>
       <span class="spacer"></span>
-      <span>Preview shows 200 rows per page. Download CSV exports every matching row and does not mark anything as used.</span>
+      <span>Preview shows 200 rows per page. Download CSV exports every matching row (plus provider detail columns when it holds NPI leads) and does not mark anything as used.</span>
     </div>
   </div>
 </main>
@@ -334,7 +353,7 @@
         <span class="spacer"></span>
         <button class="small" id="updCheckBtn" onclick="loadUpdates(true)">Check now</button>
       </div>
-      <p class="hint" style="margin-top:8px">Foursquare, Overture and OpenStreetMap publish new releases regularly. The app checks once a day when it starts. A newer release can be downloaded and merged into All Leads: only fresh leads are added (neither their phone nor their email is already in All Leads), the rest are skipped and counted, and businesses you already have are updated in place. Updates never touch Used Data or change which leads are used; only imports do that.</p>
+      <p class="hint" style="margin-top:8px">Foursquare, Overture and OpenStreetMap publish new releases regularly, and CMS publishes the full NPI (NPPES) provider file every month. The app checks once a day when it starts. A newer release can be downloaded and merged into All Leads: only fresh leads are added (neither their phone nor their email is already in All Leads), the rest are skipped and counted, and businesses you already have are updated in place. NPI is the exception: every active provider with a valid phone is added, even when the phone is already in All Leads or shared with other providers (doctors in one practice share its phone); those overlaps are only counted. Updates never touch Used Data or change which leads are used; only imports do that.</p>
       <div class="preview" style="max-height:none"><table id="updGrid"><thead><tr><th>Source</th><th>Installed release</th><th>Installed on</th><th>Latest release</th><th>Newer by</th><th>Download</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>
     </div>
     <div class="card">
@@ -346,12 +365,13 @@
       <h2>How an update runs</h2>
       <ol style="margin:0;padding-left:20px;line-height:1.8">
         <li>Click <b>Download &amp; install</b>. The updater opens in its own console window and this app closes so the database is free.</li>
-        <li>The release is downloaded into <code>data\</code> (10 to 12 GB, resumable), then USA contacts are extracted and normalized.</li>
+        <li>The release is downloaded into <code>data\</code> (10 to 12 GB for Foursquare, Overture and OpenStreetMap; about 1.1 GB for NPI, which is unpacked to about 10 GB in the temp folder while it is read; resumable), then USA contacts are extracted and normalized.</li>
         <li>Businesses already in All Leads (same source id) are updated if their details changed, otherwise left untouched.</li>
         <li>Every other row is a candidate. It is added only when neither its phone nor its email is already in All Leads. Used Data is not checked and no lead is marked used. Rows with no valid phone or email, rows whose phone or email is already known, and repeats of the same phone or email inside the release are skipped and counted.</li>
+        <li>NPI follows the every-provider rule instead: each active provider (individuals and organizations) with a valid phone is added, and only rows with no valid phone are skipped (NPPES has no email addresses). How many were added although their phone was already in All Leads or shared with another new provider is shown for information. Provider details (NPI number, type, credential, specialty, taxonomy, authorized official) are kept with each NPI lead, and NPIs deactivated since the last file are closed.</li>
         <li>Fresh leads are stamped with the update, filter tables are rebuilt, the raw download is deleted, and the app starts again showing how many fresh leads were added and how many old ones were skipped. The run appears below, under Data batch in All Leads, and in History as kind "update".</li>
       </ol>
-      <p class="hint" style="margin:10px 0 0">Foursquare needs a Hugging Face token in the git-ignored <code>.env</code> file (copy <code>.env.example</code> and set <code>HF_TOKEN</code>). Overture and OpenStreetMap need no credentials. To be told about new releases without opening the app, run <code>pipeline\install_daily_check.bat</code> once.</p>
+      <p class="hint" style="margin:10px 0 0">Foursquare needs a Hugging Face token in the git-ignored <code>.env</code> file (copy <code>.env.example</code> and set <code>HF_TOKEN</code>). Overture, OpenStreetMap and NPI need no credentials. To be told about new releases without opening the app, run <code>pipeline\install_daily_check.bat</code> once.</p>
     </div>
   </div>
 </main>
@@ -404,6 +424,12 @@ const skippedParts = b => [`${fmt(b.skipped_in_leads)} phone or email already in
   // only updates installed before updates were separated from Used Data have this count
   ...(b.skipped_in_used ? [`${fmt(b.skipped_in_used)} already in Used Data`] : []),
   `${fmt(b.skipped_duplicate)} repeated inside the release`, `${fmt(b.skipped_no_contact)} with no valid phone or email`];
+// every-provider batches (NPI) skip only rows without a phone or email; the overlaps were added anyway and are shown for information
+const everyProvider = b => b.rule === 'every_provider';
+const providerParts = b => [`${fmt(b.skipped_no_contact)} skipped with no valid phone or email`,
+  `${fmt(b.phone_in_leads)} added anyway with a phone already in All Leads`,
+  `${fmt(b.phone_shared_in_release)} added anyway sharing a phone with another new provider`,
+  `${fmt(b.deactivated_closed)} deactivated NPIs closed`];
 // [installed, latest] as shown: two releases of the same day (e.g. 2026-09-10.0 and .1) need their full versions
 const relShown = r => r.installed && r.version && r.installed !== r.version && r.installed_release_date === r.latest_release_date
   ? [r.installed, r.version] : [r.installed_release_date || r.installed, r.latest_release_date || r.version];
@@ -428,13 +454,15 @@ function renderUpdates(st) {
 function renderBatchGrid(batches) {
   const nt = '<span class="muted">not tracked</span>';
   $('batchGrid').querySelector('tbody').innerHTML = batches.map(b => {
-    const skipped = b.legacy ? nt : `${fmt(b.skipped_total)}<div class="small-muted">${esc(skippedParts(b).join(' · '))}</div>`;
-    const fresh = b.legacy ? `<span class="muted" title="Installed before batch tracking: ${esc(fmt(b.new_candidates))} new businesses were added and count as original data">not tracked</span>` : `<b>${fmt(b.fresh)}</b>`;
+    const parts = b.legacy ? [] : everyProvider(b) ? providerParts(b) : skippedParts(b);
+    const skipped = b.legacy ? nt : `${fmt(b.skipped_total)}<div class="small-muted">${esc(parts.join(' · '))}</div>`;
+    const fresh = b.legacy ? `<span class="muted" title="Installed before batch tracking: ${esc(fmt(b.new_candidates))} new businesses were added and count as original data">not tracked</span>`
+      : everyProvider(b) ? `<b title="Every provider rule: added even when the phone is already in All Leads">${fmt(b.fresh)}</b>` : `<b>${fmt(b.fresh)}</b>`;
     const still = b.legacy ? nt : `${fmt(b.in_db_unused)} <span class="muted">of ${fmt(b.in_db)}</span>`;
     const btn = b.legacy ? '' : `<button class="small" onclick="viewBatch(${Number(b.id)})">View in All Leads</button>`;
     return `<tr><td><b>${esc(b.source)}</b></td><td title="${esc(b.version || '')}">${esc(b.release_date || '')}</td>` +
       `<td title="${esc(b.installed_at || '')}">${esc((b.installed_at || '').slice(0, 10))}</td><td class="num">${fresh}</td>` +
-      `<td class="wrap" style="min-width:260px" title="${b.legacy ? '' : esc(skippedParts(b).join('\n'))}">${skipped}</td>` +
+      `<td class="wrap" style="min-width:260px" title="${b.legacy ? '' : esc(parts.join('\n'))}">${skipped}</td>` +
       `<td>${fmt(b.updated)} / ${fmt(b.unchanged)}</td><td>${still}</td><td>${btn}</td></tr>`;
   }).join('') || '<tr><td colspan="8" class="muted" style="padding:14px">No updates installed yet</td></tr>';
 }
@@ -460,12 +488,16 @@ function askUpdate(source) {
   const d = r.days_newer, days = d == null || d < 0 ? '' : d === 0 ? ' (published the same day)' : ` (${daysText(d, true)} newer)`;
   const [inst, latest] = relShown(r);
   $('updTitle').textContent = `Update ${source} to ${r.version}?`;
+  const rule = r.rule === 'every_provider'
+    ? `Every active provider with a valid phone is added, even when that phone is already in All Leads or shared with other providers; only rows with no valid phone are skipped. Used Data is not touched. ` +
+      `Providers already in All Leads are updated in place with their details, and deactivated NPIs are closed. When it finishes you will see how many providers were added, ` +
+      `and how many of them had a phone already in All Leads or shared with another new provider, `
+    : `A new lead is added only when neither its phone nor its email is already in All Leads; the rest are skipped and counted. Used Data is not touched. ` +
+      `Businesses already in All Leads are updated in place. When it finishes you will see how many fresh leads were added and how many old ones were skipped, `;
   $('updText').textContent = `Installed release: ${inst || 'not recorded'}${r.updated_at ? ` (installed on ${r.updated_at.slice(0, 10)})` : ''}\n` +
     `Latest release: ${latest}${days}\n\n` +
     `This downloads ${r.size_text || 'the release'}${r.note ? ` (${r.note})` : ''}, extracts USA contacts and merges them into All Leads. ` +
-    `A new lead is added only when neither its phone nor its email is already in All Leads; the rest are skipped and counted. Used Data is not touched. ` +
-    `Businesses already in All Leads are updated in place. When it finishes you will see how many fresh leads were added and how many old ones were skipped, ` +
-    `and the new batch can be picked under Data batch in All Leads.\n\n` +
+    rule + `and the new batch can be picked under Data batch in All Leads.\n\n` +
     `Leads Explorer will close while the updater runs in a separate window, then start again automatically. Keep the computer on; the download can take a while and resumes if interrupted.`;
   $('updGo').onclick = async () => {
     $('updModal').style.display = 'none';
@@ -544,8 +576,9 @@ function previewTable(container, headers, rows) {
 async function openPath(p) { const r = await api().open_path(p); if (!r.ok) toast(r.message); }
 async function refreshTotals() {
   options = await api().get_options();
-  $('total').innerHTML = `<b>${fmt(options.total)}</b> leads · ${fmt(options.total - options.used)} unused · ${fmt(options.used)} used<br>` +
-    `<b>${fmt(options.used_contacts)}</b> contacts in Used Data · ` + options.sources.map(s => `${s.v} ${fmt(s.n)}`).join(' · ');
+  // two balanced lines however many sources there are: totals and Used Data, then the per-source counts
+  $('total').innerHTML = `<b>${fmt(options.total)}</b> leads · ${fmt(options.total - options.used)} unused · ${fmt(options.used)} used · ` +
+    `<b>${fmt(options.used_contacts)}</b> contacts in Used Data<br>` + options.sources.map(s => `${esc(s.v)} ${fmt(s.n)}`).join(' · ');
   $('uExcelBtn').style.display = options.excel ? '' : 'none';
 }
 
@@ -556,14 +589,17 @@ function filters() {
     sources: srcList(), batches: [...sel.batches], tree: [...sel.tree], states: [...sel.states],
     cities: [...sel.cities], countries: [...sel.countries],
     keywords: $('keywords').value, exclude: $('exclude').value, kw_names: $('kw_names').checked,
-    name: $('name').value, zip: $('zip').value,
+    name: $('name').value, zip: $('zip').value, lookup: $('lookup').value,
+    npi_type: document.querySelector('input[name=npi_type]:checked').value,
     has_phone: $('has_phone').checked, has_email: $('has_email').checked,
     has_website: $('has_website').checked, has_facebook: $('has_facebook').checked,
     open_only: $('open_only').checked,
     usage: document.querySelector('input[name=usage]:checked').value,
   };
 }
-['name', 'zip', 'keywords', 'exclude'].forEach(id => $(id).addEventListener('input', schedule));
+['name', 'zip', 'keywords', 'exclude', 'lookup'].forEach(id => $(id).addEventListener('input', schedule));
+function clearLookup() { $('lookup').value = ''; schedule(); }
+const LOOKUP_HINT = 'Exact match on a 10-digit NPI or phone, or an email address. While this box is filled, all other filters are ignored.';
 function clearKeywords() { $('keywords').value = ''; $('exclude').value = ''; $('kw_names').checked = true; schedule(); }
 $('treeSearch').addEventListener('input', () => debounce(renderTree));
 $('citySearch').addEventListener('input', () => debounce(loadCities));
@@ -582,11 +618,12 @@ function clearSel(key) {
 }
 function resetAll() {
   ['sources','batches','tree','states','cities','countries'].forEach(k => sel[k].clear());
-  ['name', 'zip', 'keywords', 'exclude', 'treeSearch', 'citySearch', 'stateSearch'].forEach(id => $(id).value = '');
+  ['name', 'zip', 'lookup', 'keywords', 'exclude', 'treeSearch', 'citySearch', 'stateSearch'].forEach(id => $(id).value = '');
   ['has_phone', 'has_email', 'has_website', 'has_facebook'].forEach(id => $(id).checked = false);
   $('kw_names').checked = true;
   $('open_only').checked = true;
   document.querySelector('input[name=usage][value=unused]').checked = true;
+  document.querySelector('input[name=npi_type][value=""]').checked = true;
   renderList('sources', allSources, 'sources'); renderBatches();
   renderChips('treeChips', 'tree'); renderChips('cityChips', 'cities');
   treeOpen.clear();
@@ -596,6 +633,9 @@ function resetAll() {
 async function init() {
   await refreshTotals();
   allSources = options.sources;
+  const nt = options.npi_types || {};
+  $('npiTypeBox').style.display = (nt.Individual || nt.Organization) ? '' : 'none';
+  $('npiInd').textContent = fmt(nt.Individual); $('npiOrg').textContent = fmt(nt.Organization);
   renderList('sources', allSources, 'sources');
   renderList('countries', options.countries, 'countries');
   ready = true;
@@ -632,7 +672,8 @@ function announceBatches() {
   try { seen = Math.max(seen, Number(localStorage.getItem('leads.lastSeenBatch')) || 0); } catch (e) {}
   if (newest.id <= seen) return;
   const lines = batchInfo.batches.filter(b => b.id > seen && !b.legacy)
-    .map(b => `${b.source} update installed: ${fmt(b.fresh)} fresh leads added, ${fmt(b.skipped_total)} old skipped`);
+    .map(b => everyProvider(b) ? `${b.source} update installed: ${fmt(b.fresh)} providers added, ${fmt(b.skipped_total)} skipped with no phone`
+      : `${b.source} update installed: ${fmt(b.fresh)} fresh leads added, ${fmt(b.skipped_total)} old skipped`);
   try { localStorage.setItem('leads.lastSeenBatch', String(newest.id)); } catch (e) {}
   api().mark_batch_seen(newest.id).catch(e => console.error(e));
   if (!lines.length) return;
@@ -696,11 +737,17 @@ async function refresh() {
   if (!ready) return;
   $('status').textContent = 'Querying…';
   const f = filters();
-  const [c, p] = await Promise.all([api().count(f), api().preview(f, 200, offset)]);
+  const [c, p, u] = await Promise.all([api().count(f), api().preview(f, 200, offset),
+    f.lookup.trim() ? api().lookup_used(f.lookup, 200) : Promise.resolve(null)]);
+  renderLookupUsed(c, u);
   lastCount = c.total;
   $('cTotal').textContent = fmt(c.total); $('cPhone').textContent = fmt(c.phone);
   $('cEmail').textContent = fmt(c.email); $('cWeb').textContent = fmt(c.website); $('cFb').textContent = fmt(c.facebook);
   $('cBySrc').textContent = (c.by_source || []).map(s => `${s.v} ${fmt(s.n)}`).join(' · ');
+  const lk = c.lookup;
+  $('lookupInfo').textContent = !lk ? LOOKUP_HINT
+    : lk.kind === 'invalid' ? 'Type a full 10-digit NPI or phone number, or an email address.'
+    : `${lk.kind === 'email' ? 'Email' : 'NPI / phone'} ${lk.value}: ${fmt(c.total)} in All Leads (used or not, open or closed) · ${fmt(lk.used_data)} in Used Data. Other filters are ignored.`;
   const thead = $('grid').querySelector('thead'), tbody = $('grid').querySelector('tbody');
   thead.innerHTML = '<tr>' + p.columns.map(c => `<th>${esc(c === 'added_batch' ? 'Added in' : c.replace(/_/g, ' '))}</th>`).join('') + '</tr>';
   tbody.innerHTML = p.rows.map(r => '<tr>' + r.map((v, i) => {
@@ -716,6 +763,18 @@ async function refresh() {
   $('prevBtn').disabled = offset === 0; $('nextBtn').disabled = to >= lastCount;
   $('exportBtn').disabled = lastCount === 0;
   $('status').textContent = '';
+}
+// Find one lead: Used Data matches in their own block under the All Leads rows
+function renderLookupUsed(c, u) {
+  const box = $('lookupUsed'), lk = c.lookup;
+  if (!u || !lk || lk.kind === 'invalid') { box.style.display = 'none'; return; }
+  box.style.display = '';
+  $('lookupUsedTitle').textContent = `Used Data: ${fmt(u.total)} contact${u.total === 1 ? '' : 's'}`;
+  $('lookupUsedNote').textContent = `All Leads above: ${fmt(c.total)} lead${c.total === 1 ? '' : 's'} · ` +
+    (u.total && c.total ? 'found in both' : u.total ? 'only in Used Data' : c.total ? 'only in All Leads (never imported as used)' : 'not found in either');
+  const thead = $('lookupUsedGrid').querySelector('thead'), tbody = $('lookupUsedGrid').querySelector('tbody');
+  thead.innerHTML = u.rows.length ? '<tr>' + u.columns.map(h => `<th>${esc(h.replace(/_/g, ' '))}</th>`).join('') + '</tr>' : '';
+  tbody.innerHTML = u.rows.map(r => '<tr>' + r.map(v => `<td title="${esc(v)}">${esc(v)}</td>`).join('') + '</tr>').join('');
 }
 function page(dir) { offset = Math.max(0, offset + dir * 200); refresh(); }
 

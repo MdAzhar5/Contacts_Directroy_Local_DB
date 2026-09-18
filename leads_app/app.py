@@ -1,8 +1,10 @@
 """
 Leads Explorer - desktop app over two stores in one DuckDB file:
 
-  places         25M USA business leads (Foursquare, Overture Maps, OpenStreetMap); added_batch says
-                 which installed update added a lead (NULL = original data)
+  places         25M USA business leads (Foursquare, Overture Maps, OpenStreetMap) and healthcare
+                 providers (NPI, from CMS NPPES); added_batch says which installed update added a lead
+                 (NULL = original data)
+  npi_details    provider details of the NPI leads (NPI number, type, credential, specialty, ...)
   used_contacts  contacts already used: everything imported from ContactDirectory and
                  every file imported through "Import & Map" (only imports feed it;
                  exports and data updates never change usage).
@@ -22,7 +24,9 @@ from pathlib import Path
 import duckdb
 import webview
 
-from schema import build_dims, build_tree, create_empty_db, ensure_places_columns, install_macros
+from merge import merge_rule
+from schema import (NPI_DETAIL_COLUMNS, NPI_SOURCE, build_dims, build_tree, create_empty_db, ensure_npi_details,
+                    ensure_places_columns, install_macros)
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -100,6 +104,26 @@ def keyword_regex(text: str):
         return None
     parts = [r"[\s\-/&]+".join(re.escape(t) for t in w.split()) for w in words]
     return r"\b(" + "|".join(parts) + r")(s|es)?\b"
+
+
+def lookup_clause(text):
+    """The "Find one lead" box: (kind, value, SQL condition) for an email address or a 10-digit number, which is
+    matched as a phone (lead phone, or an NPI organization's contact phone) and as an NPI number. None when empty;
+    anything else matches nothing."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    if "@" in text:
+        value = text.lower()
+        return "email", value, f"email = {sql_str(value)}"
+    digits = re.sub(r"[^0-9]", "", text)
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) != 10:
+        return "invalid", text, "FALSE"
+    v, npi = sql_str(digits), sql_str(NPI_SOURCE)
+    return "number", digits, (f"(phone = {v} OR (source = {npi} AND (source_id = {v} OR source_id IN "
+                              f"(SELECT source_id FROM npi_details WHERE contact_phone = {v}))))")
 
 
 def sql_list(values) -> str:
@@ -190,8 +214,9 @@ class Api:
         ver = self._con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() if self._table_exists("meta") else None
         if not ver or int(ver[0]) < 2:
             raise SystemExit("leads.duckdb is the old layout. Close the app and run migrate_v2.py first.")
-        if ensure_places_columns(self._con):
-            # one-time upgrade: places.added_batch (which update inserted a lead; NULL = original data)
+        # one-time upgrades: places.added_batch (which update inserted a lead; NULL = original data) and npi_details
+        added_column = ensure_places_columns(self._con)
+        if ensure_npi_details(self._con) or added_column:
             self._con.execute("CHECKPOINT")
         self._lock = threading.Lock()
         self._window = None
@@ -245,6 +270,9 @@ class Api:
     # ALL LEADS (places)
     # ======================================================================
     def _where(self, f: dict) -> str:
+        lookup = lookup_clause(f.get("lookup"))
+        if lookup:
+            return lookup[2]      # finding one lead ignores every other filter (usage, open only, ...)
         clauses = []
         sources = [x for x in f.get("sources", []) if x]
         tree = [x for x in f.get("tree", []) if x]
@@ -254,6 +282,11 @@ class Api:
 
         if sources:
             clauses.append(f"source IN ({sql_in(sources)})")
+        # NPI provider type (Individual / Organization) lives in npi_details; choosing one leaves only NPI leads
+        npi_type = f.get("npi_type")
+        if npi_type in ("Individual", "Organization"):
+            clauses.append(f"source = {sql_str(NPI_SOURCE)} AND source_id IN "
+                           f"(SELECT source_id FROM npi_details WHERE provider_type = {sql_str(npi_type)})")
         # data batch: "original" = leads from the first build, an id = leads a tracked update added
         batches = [str(x).strip() for x in (f.get("batches") or []) if x is not None]
         batch = ["added_batch IS NULL"] if "original" in batches else []
@@ -268,7 +301,7 @@ class Api:
             # a prefix test per list element is far faster than expanding a node into its leaf categories
             match = " OR ".join(f"c = {sql_str(p)} OR starts_with(c, {sql_str(p + ' > ')})" for p in tree)
             industry.append(f"len(list_filter(category_list, c -> {match})) > 0")
-        # Keywords cut across the three sources' different taxonomies (Foursquare "Security and Safety",
+        # Keywords cut across the sources' different taxonomies (Foursquare "Security and Safety",
         # Overture "Home security" / "Security systems" / "Security service", OSM "Office > Security"),
         # and optionally catch businesses whose category is generic or missing via their name.
         kw = keyword_regex(f.get("keywords"))
@@ -346,8 +379,10 @@ class Api:
         co = self._rows("SELECT country, sum(n) FROM dim_country GROUP BY 1 ORDER BY 2 DESC")
         total, used = self._one("SELECT count(*), count(used_at) FROM places")
         used_contacts = self._one("SELECT count(*) FROM used_contacts")[0]
+        npi_types = dict(self._rows("SELECT provider_type, count(*) FROM npi_details WHERE provider_type IS NOT NULL GROUP BY 1"))
         return {
             "sources": [{"v": a, "n": b} for a, b in src],
+            "npi_types": {"Individual": int(npi_types.get("Individual", 0)), "Organization": int(npi_types.get("Organization", 0))},
             "countries": [{"v": a, "n": int(b)} for a, b in co],
             "total": total, "used": used, "used_contacts": used_contacts, "excel": self.excel_ok,
         }
@@ -382,11 +417,30 @@ class Api:
         where = self._where(filters or {})
         t, ph, em, we, fb = self._one(f"SELECT count(*), count(phone), count(email), count(website), count(facebook_id) FROM places WHERE {where}")
         per_src = self._rows(f"SELECT source, count(*) FROM places WHERE {where} GROUP BY 1 ORDER BY 2 DESC")
-        return {"total": t, "phone": ph, "email": em, "website": we, "facebook": fb,
-                "by_source": [{"v": a, "n": b} for a, b in per_src]}
+        out = {"total": t, "phone": ph, "email": em, "website": we, "facebook": fb,
+               "by_source": [{"v": a, "n": b} for a, b in per_src]}
+        lookup = lookup_clause((filters or {}).get("lookup"))
+        if lookup:
+            kind, value, _ = lookup
+            cond = {"email": "email = ?", "number": "phone = ? OR npi = ?"}.get(kind)
+            used = self._one(f"SELECT count(*) FROM used_contacts WHERE {cond}", [value] * cond.count("?"))[0] if cond else 0
+            out["lookup"] = {"kind": kind, "value": value, "used_data": used}
+        return out
 
     def preview(self, filters, limit=200, offset=0):
         where = self._where(filters or {})
+        if lookup_clause((filters or {}).get("lookup")):
+            # one lead: show the NPI provider details beside it
+            cols, rows = self._q(f"""
+                SELECT p.source, p.business_name, p.phone, p.email, p.website, p.address, p.city, p.state, p.zip, p.categories,
+                       p.date_closed, p.used_at, p.added_batch, d.npi, d.provider_type, d.credential, d.specialty,
+                       d.contact_name, d.contact_title, d.contact_phone
+                FROM (SELECT * FROM places WHERE {where}) p
+                LEFT JOIN npi_details d ON d.source_id = CASE WHEN p.source = {sql_str(NPI_SOURCE)} THEN p.source_id END
+                ORDER BY p.state, p.city, p.business_name
+                LIMIT {int(limit)} OFFSET {int(offset)}
+            """)
+            return {"columns": cols, "rows": [list(r) for r in rows]}
         cols, rows = self._q(f"""
             SELECT source, business_name, phone, email, website, address, city, state, zip, categories, date_closed, used_at, added_batch
             FROM places WHERE {where}
@@ -394,6 +448,19 @@ class Api:
             LIMIT {int(limit)} OFFSET {int(offset)}
         """)
         return {"columns": cols, "rows": [list(r) for r in rows]}
+
+    def lookup_used(self, text, limit=200):
+        """Find one lead, Used Data side: the used contacts with that email, phone or NPI (shown apart from All Leads)."""
+        lookup = lookup_clause(text)
+        cond = {"email": "email = ?", "number": "phone = ? OR npi = ?"}.get(lookup[0]) if lookup else None
+        if not cond:
+            return {"columns": [], "rows": [], "total": 0}
+        params = [lookup[1]] * cond.count("?")
+        shown = ["name", "phone", "email", "npi", "credentials", "specialty", "address_line_1", "city", "state", "postal_code",
+                 "industry", "category", "source", "source_type", "source_file", "uploaded_at"]
+        cols, rows = self._q(f"SELECT {', '.join(shown)} FROM used_contacts WHERE {cond} ORDER BY id DESC LIMIT {int(limit)}", params)
+        total = self._one(f"SELECT count(*) FROM used_contacts WHERE {cond}", params)[0]
+        return {"columns": cols, "rows": [list(r) for r in rows], "total": total}
 
     def export_csv(self, filters):
         """Write matching rows to CSV. Exports never change usage: only imports feed Used Data."""
@@ -409,11 +476,25 @@ class Api:
             for b in self._batch_history() if not b["legacy"])
         added_in = f"CASE WHEN added_batch IS NULL THEN 'original'{whens} ELSE 'update ' || CAST(added_batch AS VARCHAR) END AS added_in"
         with self._lock:
+            # the filter scans every lead (an industry or keyword filter takes seconds), so it runs once into a temp
+            # table; the NPI check, the CSV and the row count all read that instead of scanning places again
+            self._con.execute("DROP TABLE IF EXISTS export_rows")
+            self._con.execute(f"CREATE TEMP TABLE export_rows AS SELECT {', '.join(EXPORT_COLUMNS)}, {added_in} FROM places WHERE {where}")
+            n = self._con.execute("SELECT count(*) FROM export_rows").fetchone()[0]
+            select = "SELECT * FROM export_rows"
+            # NPI provider details are appended (blank for other sources) only when NPI rows are exported,
+            # so an export without them keeps exactly the usual columns
+            if self._con.execute(f"SELECT EXISTS (SELECT 1 FROM export_rows WHERE source = {sql_str(NPI_SOURCE)})").fetchone()[0]:
+                # the join key is the id of NPI rows only (NULL for other sources): a plain equality keeps this a hash
+                # join; "ON e.source = 'NPI' AND ..." made DuckDB compare every row with all 9M providers (minutes)
+                select = (f"SELECT e.*, {', '.join('d.' + c for c in NPI_DETAIL_COLUMNS)} FROM export_rows e "
+                          f"LEFT JOIN npi_details d "
+                          f"ON d.source_id = CASE WHEN e.source = {sql_str(NPI_SOURCE)} THEN e.source_id END")
             self._con.execute(f"""
-                COPY (SELECT {', '.join(EXPORT_COLUMNS)}, {added_in} FROM places WHERE {where} ORDER BY state, city, business_name)
+                COPY ({select} ORDER BY state, city, business_name)
                 TO {fs(path)} (HEADER, DELIMITER ',', QUOTE '"', ESCAPE '"')
             """)
-            n = self._con.execute(f"SELECT count(*) FROM places WHERE {where}").fetchone()[0]
+            self._con.execute("DROP TABLE export_rows")
             self._con.execute("""
                 INSERT INTO history (id, kind, filename, occurred_at, source, industry, source_type, source_category, category,
                                      rows, rows_failed, rows_skipped, places_marked, mapping_json, filters_json, error_sample, output_path)
@@ -714,7 +795,7 @@ class Api:
             return {"ok": False, "message": str(exc)}
 
     # ======================================================================
-    # DATA UPDATES (new Foursquare / Overture / OpenStreetMap releases)
+    # DATA UPDATES (new Foursquare / Overture / OpenStreetMap / NPI releases)
     # ======================================================================
     def _meta(self, key):
         row = self._rows("SELECT value FROM meta WHERE key = ?", [key])
@@ -723,7 +804,9 @@ class Api:
     def _batch_history(self) -> list:
         """Installed updates (history kind 'update'), newest first, without place counts.
         Updates merged before batch tracking stored only {version, new, updated, unchanged}: legacy=True,
-        their inserted rows count as original data and fresh/skipped are unknown (None)."""
+        their inserted rows count as original data and fresh/skipped are unknown (None).
+        rule: 'fresh_only' (tracked batches from before rules were recorded too) or 'every_provider' (NPI), whose
+        phone_in_leads / phone_shared_in_release (added anyway, information only) and deactivated_closed are set."""
         rows = self._rows("""
             SELECT id, source, occurred_at, places_marked, filters_json
             FROM history WHERE kind = 'update' ORDER BY id DESC
@@ -747,12 +830,15 @@ class Api:
                 new, upd, same = to_int(d.get("new")), to_int(d.get("updated")), to_int(d.get("unchanged"))
                 b.update(existing=None if upd is None or same is None else upd + same, updated=upd, unchanged=same,
                          new_candidates=new, fresh=None, skipped_total=None, skipped_in_leads=None, skipped_in_used=None,
-                         skipped_duplicate=None, skipped_no_contact=None)
+                         skipped_duplicate=None, skipped_no_contact=None, rule=None, phone_in_leads=None,
+                         phone_shared_in_release=None, deactivated_closed=None)
                 b["total"] = None if new is None or b["existing"] is None else new + b["existing"]
             else:
                 for k in ("total", "existing", "updated", "unchanged", "new_candidates", "fresh", "skipped_total",
-                          "skipped_in_leads", "skipped_in_used", "skipped_duplicate", "skipped_no_contact"):
+                          "skipped_in_leads", "skipped_in_used", "skipped_duplicate", "skipped_no_contact",
+                          "phone_in_leads", "phone_shared_in_release", "deactivated_closed"):
                     b[k] = to_int(d.get(k))
+                b["rule"] = "every_provider" if d.get("rule") == "every_provider" else "fresh_only"
             day = (b["installed_at"] or "")[:10]
             b["label"] = " · ".join([source] + ([f"release {b['release_date']}"] if b["release_date"] else [])
                                     + ([f"installed {day}"] if day else []))
@@ -794,7 +880,7 @@ class Api:
             cur = installed.get(source)
             ver = r.get("version")
             results.append({
-                "source": source, "installed": cur, "updated_at": updated.get(source),
+                "source": source, "rule": merge_rule(source), "installed": cur, "updated_at": updated.get(source),
                 "version": ver, "size": r.get("size", 0), "size_text": sources.fmt_size(r["size"]) if r.get("size") else "",
                 "note": r.get("note", ""), "error": r.get("error"),
                 "available": bool(ver) and (cur is None or ver > cur),

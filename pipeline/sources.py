@@ -7,6 +7,8 @@ download it with resume support. Pure functions; nothing here touches the databa
   Overture Maps Places   public S3 bucket overturemaps-us-west-2, folders release/YYYY-MM-DD.N,
                          files under theme=places/type=place/
   OpenStreetMap          Geofabrik us-latest.osm.pbf (rebuilt daily; its Last-Modified date is the version)
+  NPI                    CMS NPPES "NPI Files" page: the V.2 monthly full replacement zip
+                         (NPPES_Data_Dissemination_<Month>_<Year>_V2.zip, ~1.1 GB); the date in its link text is the version
 
 Versions are plain strings that sort chronologically: "2026-08-11", "2026-08-19.0", "2026-09-13".
 """
@@ -25,13 +27,18 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 DATA = ROOT / "data"
 
-SOURCES = ("Foursquare", "Overture", "OpenStreetMap")
+SOURCES = ("Foursquare", "Overture", "OpenStreetMap", "NPI")
 UA = {"User-Agent": "leads-explorer/1.0"}
 
 FSQ_REPO = "foursquare/fsq-os-places"
 OVERTURE_BUCKET = "https://overturemaps-us-west-2.s3.amazonaws.com/"
 OSM_URL = "https://download.geofabrik.de/north-america/us-latest.osm.pbf"
+NPI_PAGE = "https://download.cms.gov/nppes/NPI_Files.html"
 _S3NS = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+# the monthly full replacement file only; weekly incrementals (..._090726_091326_Weekly_V2.zip) and the
+# deactivation report have other names, and V.1 files (no _V2) are no longer supported by CMS
+_NPI_LINK = re.compile(r"""<a\b[^>]*href=['"]([^'"]*?(NPPES_Data_Dissemination_[A-Za-z]+_\d{4}_V2\.zip))['"][^>]*>(.*?)</a>"""
+                       r"""(?:\s*-\s*ZIP format\s*\(([\d,.]+)\s*([KMG])B\))?""", re.I | re.S)
 
 
 class SourceError(RuntimeError):
@@ -173,6 +180,41 @@ def latest_fsq(token: str | None = None) -> dict:
             "files": [], "note": f"{len(files)} parquet files on Hugging Face"}
 
 
+def parse_npi_page(html: str, page_url: str = NPI_PAGE) -> dict | None:
+    """The newest V.2 monthly full file linked from the CMS NPI Files page: {url, name, version, page_size}.
+    version comes from the link text ("NPPES Data Dissemination V.2 (September 14, 2026)" -> "2026-09-14"), None if it
+    has no date; page_size is the page's rounded "(1,105.79 MB)" (binary units) in bytes, None if absent."""
+    found = []
+    for href, name, text, amount, unit in _NPI_LINK.findall(html):
+        m = re.search(r"([A-Z][a-z]+ \d{1,2}, \d{4})", re.sub(r"\s+", " ", text))
+        try:
+            version = datetime.strptime(m.group(1), "%B %d, %Y").strftime("%Y-%m-%d") if m else None
+        except ValueError:
+            version = None
+        page_size = int(float(amount.replace(",", "")) * 1024 ** ("KMG".index(unit.upper()) + 1)) if amount else None
+        found.append({"url": urllib.request.urljoin(page_url, href), "name": name, "version": version, "page_size": page_size})
+    return max(found, key=lambda f: f["version"] or "") if found else None
+
+
+def latest_npi() -> dict:
+    _, body = _fetch(NPI_PAGE)
+    f = parse_npi_page(body.decode("latin-1"))     # the page declares ISO-8859-1
+    if not f:
+        raise SourceError("No V.2 monthly NPPES file is linked on the CMS NPI Files page.")
+    version, size = f["version"], None
+    try:
+        # the exact byte count lets the resumable download verify the file; Last-Modified dates a link text without one
+        headers, _ = _fetch(f["url"], method="HEAD")
+        size = int(headers.get("content-length", 0)) or None
+        version = version or version_from_last_modified(headers["last-modified"])
+    except Exception:
+        pass
+    if not version:
+        raise SourceError(f"Could not tell the release date of {f['name']} from the CMS NPI Files page.")
+    return {"source": "NPI", "version": version, "size": size or f["page_size"] or 0, "files": [(f["url"], f["name"], size)],
+            "note": "CMS NPPES monthly full file (V.2)"}
+
+
 def latest(source: str, token: str | None = None) -> dict:
     if source == "Overture":
         return latest_overture()
@@ -180,6 +222,8 @@ def latest(source: str, token: str | None = None) -> dict:
         return latest_osm()
     if source == "Foursquare":
         return latest_fsq(token)
+    if source == "NPI":
+        return latest_npi()
     raise SourceError(f"Unknown source {source}")
 
 
@@ -232,7 +276,7 @@ def http_download(url: str, dest: Path, size: int | None = None, progress=None, 
 
 
 def download(source: str, info: dict, progress=None) -> Path:
-    """Fetch the release described by info into data/<source>/<version>/. Returns the folder (or the .pbf file)."""
+    """Fetch the release described by info into data/<source>/<version>/. Returns the folder (or the .pbf / NPPES .zip file)."""
     version = info["version"]
     dest_dir = DATA / source.lower() / version
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -243,15 +287,15 @@ def download(source: str, info: dict, progress=None) -> Path:
                                   allow_patterns=[f"{rel}/places/parquet/*.parquet"], local_dir=str(dest_dir), max_workers=8)
         return Path(local) / rel / "places" / "parquet"
     files = info["files"]
-    total = sum(f[2] for f in files)
+    total = sum(f[2] or 0 for f in files)      # size None: unknown (NPI when its HEAD request failed), not verified
     done_before = 0
     for i, (url, name, size) in enumerate(files, 1):
         def cb(done, _total, elapsed, _base=done_before, _i=i):
             if progress:
-                progress(_base + done, total, elapsed, f"file {_i}/{len(files)} {name}")
+                progress(_base + done, total or _total, elapsed, f"file {_i}/{len(files)} {name}")
         http_download(url, dest_dir / name, size, cb)
-        done_before += size
-    if source == "OpenStreetMap":
+        done_before += size or 0
+    if source in ("OpenStreetMap", "NPI"):
         return dest_dir / files[0][1]
     return dest_dir
 

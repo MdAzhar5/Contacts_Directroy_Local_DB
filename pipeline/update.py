@@ -1,6 +1,6 @@
 r"""
-Data updater for Leads Explorer: find newer releases of Foursquare, Overture and
-OpenStreetMap, download them, extract USA contacts, and merge them into leads.duckdb.
+Data updater for Leads Explorer: find newer releases of Foursquare, Overture,
+OpenStreetMap and NPI (CMS NPPES), download them, extract USA contacts, and merge them into leads.duckdb.
 
     python pipeline/update.py --check              print installed vs latest versions
     python pipeline/update.py --check --notify     same, plus a Windows popup when something is newer
@@ -162,7 +162,7 @@ def run_update(source: str, version: str | None, assume_yes: bool, keep_download
         target = raw if raw.is_dir() else raw.parent
         try:
             for f in Path(target).rglob("*"):
-                if f.is_file() and f.suffix in (".parquet", ".pbf", ".part") and f.name != parquet.name and f != parquet:
+                if f.is_file() and f.suffix in (".parquet", ".pbf", ".zip", ".part") and f.name != parquet.name and f != parquet:
                     f.unlink()
             print("  raw download removed (extracted parquet kept)")
         except OSError as exc:     # e.g. OneDrive or antivirus still holds a file; the update itself is installed
@@ -175,13 +175,22 @@ def run_update(source: str, version: str | None, assume_yes: bool, keep_download
 
 def print_summary(s: dict) -> None:
     """What the merge added and skipped, in plain words."""
-    lines = [
-        ("Fresh leads added (neither phone nor email seen before):", s["fresh"]),
-        ("Old leads skipped:", s["skipped_total"]),
-        ("  phone or email already in All Leads:", s["skipped_in_leads"]),
-        ("  duplicate phone/email inside this release:", s["skipped_duplicate"]),
-        ("  no valid phone or email:", s["skipped_no_contact"]),
-    ]
+    if s.get("rule") == "every_provider":     # NPI: every provider is added; overlaps are only counted
+        lines = [
+            ("Providers added (every provider rule):", s["fresh"]),
+            ("  added anyway, phone or email already in All Leads:", s.get("phone_in_leads", 0)),
+            ("  added anyway, phone shared with another new provider:", s.get("phone_shared_in_release", 0)),
+            ("Skipped, no valid phone or email:", s["skipped_no_contact"]),
+            ("Deactivated NPIs closed:", s.get("deactivated_closed", 0)),
+        ]
+    else:
+        lines = [
+            ("Fresh leads added (neither phone nor email seen before):", s["fresh"]),
+            ("Old leads skipped:", s["skipped_total"]),
+            ("  phone or email already in All Leads:", s["skipped_in_leads"]),
+            ("  duplicate phone/email inside this release:", s["skipped_duplicate"]),
+            ("  no valid phone or email:", s["skipped_no_contact"]),
+        ]
     width = max(len(label) for label, _ in lines) + 2
     print(f"\n{s['source']} release {s['release_date']} ({s['version']}), installed {s['installed_at'][:10]}")
     for label, n in lines:

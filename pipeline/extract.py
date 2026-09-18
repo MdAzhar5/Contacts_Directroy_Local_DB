@@ -7,19 +7,29 @@ Turn a raw release of each source into one parquet file with the common contact 
 
 Rows keep at least one of phone / email (Foursquare also facebook_id); phones and emails
 are deduplicated within the source, keeping the most complete, still-open row.
+NPI is the exception: every active US provider is kept, one row per NPI, with no phone/email
+dedupe (doctors share clinic phones), followed by eight NPI detail columns.
 The app's own normalization (10-digit phones, lowercase emails, state codes) is applied
 later, when the file is loaded by build_db.py or merged by an update.
 
   extract_fsq(parquet_dir, out)        Foursquare OS Places parquet files (any release)
   extract_overture(src_dir, out)       Overture places theme parquet files
   extract_osm(pbf_or_dir, out)         one .osm.pbf, or a folder of state extracts
+  extract_npi(zip_path, out)           a CMS NPPES V.2 zip (monthly full file); also writes npi_deactivated.parquet
+
+    python pipeline/extract.py NPI path/to/NPPES_Data_Dissemination_September_2026_V2.zip [out.parquet]
 """
 from __future__ import annotations
 
+import csv
 import os
+import re
 import shutil
+import sys
 import tempfile
 import time
+import urllib.request
+import zipfile
 from pathlib import Path
 
 import duckdb
@@ -346,6 +356,266 @@ def extract_osm(pbf: Path, out: Path, geo: Path = GEO) -> dict:
     return stats
 
 
-EXTRACTORS = {"Foursquare": extract_fsq, "Overture": extract_overture, "OpenStreetMap": extract_osm}
+# ---------------------------------------------------------------------------
+# NPI (CMS NPPES Data Dissemination, V.2)
+# ---------------------------------------------------------------------------
+NUCC_PAGE = "https://www.nucc.org/index.php/code-sets-mainmenu-41/provider-taxonomy-mainmenu-40/csv-mainmenu-57"
+NUCC_CACHE = DATA / "nucc_taxonomy.csv"
+NUCC_COLUMNS = ("Code", "Grouping", "Classification", "Specialization", "Display Name")
+NPI_DETAIL_COLUMNS = "npi, provider_type, credential, specialty, taxonomy_code, contact_name, contact_title, contact_phone"
+NPI_DEACTIVATED = "npi_deactivated.parquet"
+# the columns used from the ~330 in npidata_pfile_*.csv (names as in the V.2 header), plus 15 taxonomy slots
+NPI_FIELDS = {
+    "npi": "NPI",
+    "entity": "Entity Type Code",
+    "org_name": "Provider Organization Name (Legal Business Name)",
+    "last_name": "Provider Last Name (Legal Name)",
+    "first_name": "Provider First Name",
+    "middle_name": "Provider Middle Name",
+    "credential": "Provider Credential Text",
+    "mail_phone": "Provider Business Mailing Address Telephone Number",
+    "pl_line1": "Provider First Line Business Practice Location Address",
+    "pl_line2": "Provider Second Line Business Practice Location Address",
+    "pl_city": "Provider Business Practice Location Address City Name",
+    "pl_state": "Provider Business Practice Location Address State Name",
+    "pl_postal": "Provider Business Practice Location Address Postal Code",
+    "pl_country": "Provider Business Practice Location Address Country Code (If outside U.S.)",
+    "pl_phone": "Provider Business Practice Location Address Telephone Number",
+    "enumerated": "Provider Enumeration Date",
+    "last_update": "Last Update Date",
+    "deactivated": "NPI Deactivation Date",
+    "reactivated": "NPI Reactivation Date",
+    "ao_last": "Authorized Official Last Name",
+    "ao_first": "Authorized Official First Name",
+    "ao_title": "Authorized Official Title or Position",
+    "ao_phone": "Authorized Official Telephone Number",
+}
+NPI_TAXONOMY_SLOTS = 15
+NPI_TAXONOMY_CODE = "Healthcare Provider Taxonomy Code_{}"
+NPI_TAXONOMY_SWITCH = "Healthcare Provider Primary Taxonomy Switch_{}"
+
+
+def _get(url: str, timeout: int = 60) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "leads-explorer/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def nucc_taxonomy(cache: Path | None = None, page: str | None = None) -> Path:
+    """The current NUCC Health Care Provider Taxonomy CSV (code -> grouping / classification / specialization / display
+    name). Downloaded from the NUCC CSV page on every NPI extract and cached as data/nucc_taxonomy.csv; when the site is
+    unreachable (or the file looks wrong) the cached copy is used with a warning."""
+    cache, page = Path(cache or NUCC_CACHE), page or NUCC_PAGE
+    try:
+        html = _get(page).decode("utf-8", "replace")
+        links = re.findall(r"""href=["']([^"']*nucc_taxonomy_(\d+)\.csv)["']""", html, re.I)
+        if not links:
+            raise ValueError("no nucc_taxonomy_*.csv link on the NUCC CSV page")
+        href = max(links, key=lambda link: int(link[1]))[0]       # 261 = version 26.1
+        body = _get(urllib.request.urljoin(page, href))
+        try:
+            text = body.decode("utf-8-sig")
+        except UnicodeDecodeError:          # older files were Windows-1252
+            text = body.decode("cp1252")
+        header = next(csv.reader([text.splitlines()[0] if text else ""]), [])
+        missing = [c for c in NUCC_COLUMNS if c not in header]
+        if missing:
+            raise ValueError(f"{href.rsplit('/', 1)[-1]} has no {', '.join(missing)} column")
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        part = cache.with_name(cache.name + ".part")
+        part.write_bytes(text.encode("utf-8"))
+        part.replace(cache)
+        print(f"  NUCC taxonomy: {href.rsplit('/', 1)[-1]} ({len(text.splitlines()) - 1:,} lines) -> {cache.name}")
+    except Exception as exc:
+        if not cache.exists():
+            raise SystemExit(f"Could not download the NUCC taxonomy from {page} ({exc}) and there is no cached copy at {cache}.")
+        print(f"  WARNING: could not download the NUCC taxonomy ({exc}); using the cached copy {cache}")
+    return cache
+
+
+def _npi_unzip_dir(out: Path) -> Path:
+    return Path(tempfile.gettempdir()) / f"leads_extract_{Path(out).stem}_csv"
+
+
+def _unzip_npidata(zip_path: Path, dest: Path) -> Path:
+    """Stream the main npidata_pfile_*.csv (not its _fileheader.csv) out of the NPPES zip into dest."""
+    with zipfile.ZipFile(zip_path) as z:
+        members = [i for i in z.infolist() if re.fullmatch(r"npidata_pfile_.*\.csv", Path(i.filename).name, re.I)
+                   and not i.filename.lower().endswith("_fileheader.csv")]
+        if not members:
+            raise SystemExit(f"No npidata_pfile_*.csv in {zip_path.name}; is it an NPPES Data Dissemination zip?")
+        info = max(members, key=lambda i: i.file_size)
+        free = shutil.disk_usage(dest).free
+        if free < info.file_size + (2 << 30):
+            raise SystemExit(f"Not enough free space in {dest.parent} to unzip {Path(info.filename).name}: "
+                             f"needs about {(info.file_size + (2 << 30)) / 1e9:.1f} GB, {free / 1e9:.1f} GB free.")
+        target = dest / Path(info.filename).name
+        tu = time.time()
+        print(f"  unzipping {target.name} ({info.file_size / 1e9:.1f} GB) to {dest} ...")
+        with z.open(info) as src, target.open("wb") as dst:
+            shutil.copyfileobj(src, dst, 16 << 20)
+        print(f"  unzipped in {time.time() - tu:.0f}s")
+    return target
+
+
+def extract_npi(zip_path: Path, out: Path, nucc: Path | None = None) -> dict:
+    """Every active NPI (individuals and organizations) with a US practice location, one row per NPI, from a CMS NPPES
+    V.2 zip. The CSV is unzipped to the temp folder and deleted again afterwards, also when the extraction fails.
+    Also writes npi_deactivated.parquet (source_id, date_closed) next to out, for the merge to close those NPIs."""
+    zip_path, out = Path(zip_path), Path(out)
+    if not zip_path.exists():
+        raise SystemExit(f"NPPES zip not found: {zip_path}")
+    t0 = time.time()
+    print(f"NPI: reading {zip_path.name} ...")
+    nucc = Path(nucc) if nucc else nucc_taxonomy()
+    unzip_dir = _npi_unzip_dir(out)
+    shutil.rmtree(unzip_dir, ignore_errors=True)      # a leftover from a crashed run
+    unzip_dir.mkdir(parents=True)
+    con = None
+    try:
+        csv_path = _unzip_npidata(zip_path, unzip_dir)
+        with csv_path.open(encoding="latin-1", newline="") as f:
+            header = next(csv.reader(f), [])
+        wanted = list(NPI_FIELDS.values()) + [c.format(i) for i in range(1, NPI_TAXONOMY_SLOTS + 1)
+                                              for c in (NPI_TAXONOMY_CODE, NPI_TAXONOMY_SWITCH)]
+        missing = [c for c in wanted if c not in header]
+        if missing:
+            raise SystemExit(f"The NPPES file layout changed; {csv_path.name} has no column(s): {', '.join(missing)}")
+
+        con = _connect(out)
+        # "SMITH-JONES" -> "Smith-Jones", "O'BRIEN" -> "O'Brien"
+        con.execute("""
+            CREATE MACRO title_case(x) AS nullif(array_to_string(list_transform(
+                string_split(lower(regexp_replace(trim(x), '\\s+', ' ', 'g')), ' '),
+                w -> array_to_string(list_transform(string_split(w, '-'),
+                    h -> array_to_string(list_transform(string_split(h, ''''),
+                        a -> upper(left(a, 1)) || substr(a, 2)), '''')), '-')), ' '), '')
+        """)
+        con.execute("CREATE MACRO npi_date(x) AS TRY_STRPTIME(x, '%m/%d/%Y')::DATE")
+        cols = ",\n".join(f"nullif(trim(\"{src}\"), '') AS {name}" for name, src in NPI_FIELDS.items())
+        codes = ", ".join(f"nullif(trim(\"{NPI_TAXONOMY_CODE.format(i)}\"), '')" for i in range(1, NPI_TAXONOMY_SLOTS + 1))
+        switches = ", ".join(f"\"{NPI_TAXONOMY_SWITCH.format(i)}\"" for i in range(1, NPI_TAXONOMY_SLOTS + 1))
+        for encoding in ("utf-8", "latin-1"):
+            reader = (f"read_csv('{p(csv_path)}', header = true, all_varchar = true, delim = ',', quote = '\"', "
+                      f"escape = '\"', encoding = '{encoding}')")
+            try:
+                con.execute(f"""
+                    CREATE TABLE raw AS
+                    SELECT {cols},
+                           [{codes}] AS codes,
+                           list_position([{switches}], 'Y') AS primary_slot
+                    FROM {reader}
+                """)
+                break
+            except duckdb.Error as exc:
+                if encoding != "utf-8" or "unicode" not in str(exc).lower():
+                    raise
+                print("  the file is not valid UTF-8; reading it as Latin-1 instead")
+        n_file = con.execute("SELECT count(*) FROM raw").fetchone()[0]
+        print(f"  {n_file:,} NPI records in the file ({(time.time() - t0) / 60:.1f} min)")
+
+        # active = never deactivated, or reactivated on/after the deactivation date; the full file lists deactivated
+        # NPIs with the number and the date only
+        con.execute("CREATE MACRO npi_active(off, back) AS npi_date(off) IS NULL OR coalesce(npi_date(back) >= npi_date(off), false)")
+        deactivated_out = out.with_name(NPI_DEACTIVATED)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        con.execute(f"""
+            COPY (SELECT npi AS source_id, strftime(npi_date(deactivated), '%Y-%m-%d') AS date_closed FROM raw
+                  WHERE npi IS NOT NULL AND NOT npi_active(deactivated, reactivated) ORDER BY npi)
+            TO '{p(deactivated_out)}' (FORMAT PARQUET, COMPRESSION ZSTD)
+        """)
+        # taxonomies without repeats, primary (switch 'Y', else the first one) first
+        con.execute("""
+            CREATE TABLE prov AS
+            SELECT * EXCLUDE (tax_list, codes, primary_slot),
+                   CASE WHEN primary_code IS NULL THEN []::VARCHAR[]
+                        ELSE list_prepend(primary_code, list_filter(tax_list, x -> x <> primary_code)) END AS tax_list
+            FROM (
+                SELECT *, coalesce(codes[primary_slot], tax_list[1]) AS primary_code
+                FROM (SELECT * EXCLUDE (deactivated, reactivated),
+                             list_filter(codes, (x, i) -> x IS NOT NULL AND list_position(codes, x) = i) AS tax_list
+                      FROM raw
+                      WHERE npi IS NOT NULL AND entity IN ('1', '2') AND pl_country = 'US' AND npi_active(deactivated, reactivated))
+            )
+        """)
+        con.execute("DROP TABLE raw")
+        con.execute(f"""
+            CREATE TABLE nucc AS
+            SELECT trim(Code) AS code,
+                   'Healthcare > ' || trim(Grouping) || ' > ' || trim(Classification)
+                       || coalesce(' > ' || nullif(trim(Specialization), ''), '') AS label,
+                   nullif(trim("Display Name"), '') AS display
+            FROM read_csv('{p(nucc)}', header = true, all_varchar = true)
+            WHERE nullif(trim(Code), '') IS NOT NULL
+        """)
+        # every taxonomy of the provider, primary first: "Healthcare > Grouping > Classification[ > Specialization]"
+        con.execute("""
+            CREATE TABLE cats AS
+            SELECT t.npi, string_agg(coalesce(n.label, 'Healthcare > Other > ' || t.code), ' | ' ORDER BY t.pos) AS categories
+            FROM (SELECT npi, unnest(tax_list) AS code, unnest(generate_series(1, len(tax_list))) AS pos FROM prov) t
+            LEFT JOIN nucc n ON n.code = t.code
+            GROUP BY t.npi
+        """)
+        con.execute(f"""
+            COPY (
+                SELECT p.npi AS source_id,
+                       CASE WHEN p.entity = '2' THEN p.org_name
+                            ELSE nullif(concat_ws(' ', title_case(p.first_name),
+                                                  CASE WHEN regexp_matches(p.middle_name, '^[A-Za-z]') THEN upper(left(p.middle_name, 1)) || '.' END,
+                                                  title_case(p.last_name)), '') END AS business_name,
+                       coalesce(p.pl_phone, p.mail_phone)                                     AS phone,
+                       NULL::VARCHAR                                                          AS website,
+                       NULL::VARCHAR                                                          AS email,
+                       nullif(concat_ws(' ', p.pl_line1, p.pl_line2), '')                     AS address,
+                       title_case(p.pl_city)                                                  AS city,
+                       p.pl_state                                                             AS state,
+                       nullif(left(regexp_replace(coalesce(p.pl_postal, ''), '[^0-9]', '', 'g'), 5), '') AS zip,
+                       'US'                                                                   AS country,
+                       NULL::DOUBLE AS latitude, NULL::DOUBLE AS longitude,
+                       c.categories,
+                       NULL::VARCHAR AS instagram, NULL::VARCHAR AS twitter, NULL::VARCHAR AS facebook_id,
+                       strftime(npi_date(p.enumerated), '%Y-%m-%d')                           AS date_created,
+                       strftime(npi_date(p.last_update), '%Y-%m-%d')                          AS date_refreshed,
+                       NULL::VARCHAR                                                          AS date_closed,
+                       p.npi,
+                       CASE WHEN p.entity = '2' THEN 'Organization' ELSE 'Individual' END     AS provider_type,
+                       CASE WHEN p.entity = '1' THEN p.credential END                         AS credential,
+                       n.display                                                              AS specialty,
+                       p.primary_code                                                         AS taxonomy_code,
+                       CASE WHEN p.entity = '2' THEN nullif(concat_ws(' ', title_case(p.ao_first), title_case(p.ao_last)), '') END AS contact_name,
+                       CASE WHEN p.entity = '2' THEN p.ao_title END                           AS contact_title,
+                       CASE WHEN p.entity = '2' THEN p.ao_phone END                           AS contact_phone
+                FROM prov p LEFT JOIN cats c ON c.npi = p.npi LEFT JOIN nucc n ON n.code = p.primary_code
+                ORDER BY state, city, business_name
+            ) TO '{p(out)}' (FORMAT PARQUET, COMPRESSION ZSTD)
+        """)
+        s = con.execute(f"""
+            SELECT count(*), count(*) FILTER (WHERE provider_type = 'Individual'), count(*) FILTER (WHERE provider_type = 'Organization'),
+                   count(phone), count(categories), count(specialty), count(contact_phone),
+                   (SELECT count(*) FROM read_parquet('{p(deactivated_out)}'))
+            FROM read_parquet('{p(out)}')
+        """).fetchone()
+        stats = {"rows": s[0], "individuals": s[1], "organizations": s[2], "phone": s[3], "categories": s[4], "specialty": s[5],
+                 "contact_phone": s[6], "deactivated": s[7], "file_records": n_file,
+                 "not_kept": n_file - s[0] - s[7], "out": str(out), "deactivated_out": str(deactivated_out)}
+        print(f"  rows {s[0]:,} (individuals {s[1]:,}, organizations {s[2]:,}) | phone {s[3]:,} | specialty {s[5]:,} | "
+              f"deactivated {s[7]:,} | other skipped (outside US, no type) {stats['not_kept']:,}")
+    finally:
+        if con is not None:
+            _close(con, out)
+        shutil.rmtree(unzip_dir, ignore_errors=True)
+        if unzip_dir.exists():
+            print(f"  WARNING: could not delete the unzipped NPPES file; delete {unzip_dir} by hand.")
+    print(f"NPI done in {(time.time() - t0) / 60:.1f} min -> {out}")
+    return stats
+
+
+EXTRACTORS = {"Foursquare": extract_fsq, "Overture": extract_overture, "OpenStreetMap": extract_osm, "NPI": extract_npi}
 OUTPUT_NAMES = {"Foursquare": "foursquare_usa_contacts.parquet", "Overture": "overture_usa_contacts.parquet",
-                "OpenStreetMap": "osm_usa_contacts.parquet"}
+                "OpenStreetMap": "osm_usa_contacts.parquet", "NPI": "npi_usa_contacts.parquet"}
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3 or sys.argv[1] not in EXTRACTORS:
+        raise SystemExit(f"usage: python pipeline/extract.py {{{'|'.join(EXTRACTORS)}}} <raw release> [out.parquet]")
+    EXTRACTORS[sys.argv[1]](Path(sys.argv[2]), Path(sys.argv[3]) if len(sys.argv) > 3 else DATA / OUTPUT_NAMES[sys.argv[1]])
