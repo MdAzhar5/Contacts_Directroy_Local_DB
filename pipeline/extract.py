@@ -205,6 +205,13 @@ def extract_overture(src_dir: Path, out: Path, geo: Path = GEO) -> dict:
     # GeoParquet files come back as GEOMETRY (DuckDB 1.5+ adds the CRS: GEOMETRY('OGC:CRS84')); a plain parquet keeps the raw WKB blob
     types = {r[0]: r[1] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{p(Path(src_dir) / '*.parquet')}')").fetchall()}
     geom = "geometry" if (types.get("geometry") or "").startswith("GEOMETRY") else "ST_GeomFromWKB(geometry)"
+    # when a place has no taxonomy hierarchy, fall back to its single category; Overture keeps renaming these columns
+    # (`categories` was dropped in 2026-09-23.1), so only reference the ones this release has
+    fallback = [f"WHEN {c} IS NOT NULL THEN 'Other > ' || pretty({c})" for col, c in
+                (("taxonomy", "taxonomy.primary"), ("basic_category", "basic_category"), ("categories", "categories.primary"))
+                if col in types]
+    if "taxonomy" not in types:
+        raise SystemExit("This Overture release has no taxonomy column; the extractor needs updating for its new layout.")
     con.execute(f"""
         CREATE TABLE places AS
         SELECT
@@ -223,7 +230,7 @@ def extract_overture(src_dir: Path, out: Path, geo: Path = GEO) -> dict:
             ST_X({geom})                                                            AS longitude,
             CASE WHEN taxonomy.hierarchy IS NOT NULL AND len(taxonomy.hierarchy) > 0
                  THEN list_aggregate(list_transform(taxonomy.hierarchy, x -> pretty(x)), 'string_agg', ' > ')
-                 WHEN categories.primary IS NOT NULL THEN 'Other > ' || pretty(categories.primary)
+                 {' '.join(fallback)}
                  END                                                                AS categories,
             list_filter(socials, s -> s ILIKE '%instagram.com%')[1]                 AS instagram,
             list_filter(socials, s -> s ILIKE '%twitter.com%' OR s ILIKE '%x.com/%')[1] AS twitter,
