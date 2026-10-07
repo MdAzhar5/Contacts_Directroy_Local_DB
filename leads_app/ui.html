@@ -32,6 +32,10 @@
   .list label span.sub { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
   .checks label { display: block; padding: 2px 0; cursor: pointer; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .zones { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 6px; }
+  .zones button { padding: 2px 8px; font-size: 11px; border-radius: 12px; }
+  .zones button.on { background: var(--chip); border-color: #c7d2fe; color: var(--accent); font-weight: 600; }
+  .zones button.part { border-style: dashed; border-color: #a5b4fc; }
   .chip { background: var(--chip); border-radius: 12px; padding: 2px 8px; font-size: 12px; display: inline-flex; gap: 6px; align-items: center; max-width: 100%; }
   .chip b { cursor: pointer; color: var(--muted); }
   .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -160,8 +164,10 @@
     </section>
     <section>
       <h3>State <a onclick="clearSel('states')">clear</a></h3>
-      <input type="search" id="stateSearch" placeholder="Filter states">
+      <div class="zones" id="zones"></div>
+      <input type="search" id="stateSearch" placeholder="Filter, or paste TX, FL, CA (or Texas, Florida)" title="Type or paste several states separated by commas to tick them all; Enter ticks the last one too">
       <div class="list" id="states"></div>
+      <div class="muted" id="stateSummary" style="font-size:11px;margin-top:5px"></div>
     </section>
     <section>
       <h3>City <a onclick="clearSel('cities')">clear</a></h3>
@@ -677,7 +683,7 @@ document.body.addEventListener('change', e => {
     if (t.checked) { sel[key].add(v); if (labels[key]) labels[key][v] = t.dataset.label; } else sel[key].delete(v);
     if (key.startsWith('u_')) { uOffset = 0; usedSchedule(); return; }
     if (key === 'sources') { loadTree(); loadStates(); loadCities(); }
-    if (key === 'states') loadCities();
+    if (key === 'states') { loadCities(); renderZones(); }
     if (key === 'cities') renderChips('cityChips', 'cities');
     schedule();
   } else if (t.closest('#tab-leads') && (t.matches('input[type=checkbox]') || t.matches('input[type=radio]') || t.matches('input[type=text]'))) {
@@ -743,7 +749,9 @@ const LOOKUP_HINT = 'Exact match on a 10-digit NPI or phone, or an email address
 function clearKeywords() { $('keywords').value = ''; $('exclude').value = ''; $('kw_names').checked = true; schedule(); }
 $('treeSearch').addEventListener('input', () => debounce(renderTree));
 $('citySearch').addEventListener('input', () => debounce(loadCities));
-$('stateSearch').addEventListener('input', renderStates);
+$('stateSearch').addEventListener('input', () => applyStateList(false));
+$('stateSearch').addEventListener('paste', () => setTimeout(() => applyStateList(true), 0));
+$('stateSearch').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); applyStateList(true); } });
 function schedule() { clearTimeout(timer); offset = 0; timer = setTimeout(refresh, 300); }
 
 function clearSel(key) {
@@ -752,7 +760,7 @@ function clearSel(key) {
   if (key === 'sources') { renderList('sources', allSources, 'sources'); loadTree(); loadStates(); loadCities(); }
   if (key === 'batches') renderBatches();
   if (key === 'tree') { renderChips('treeChips', 'tree'); renderTree(); }
-  if (key === 'states') { renderStates(); loadCities(); }
+  if (key === 'states') { stateListNote = ''; renderStates(); loadCities(); }
   if (key === 'cities') { renderChips('cityChips', 'cities'); loadCities(); }
   schedule();
 }
@@ -871,6 +879,66 @@ async function loadStates() { allStates = await api().get_states(srcList()); ren
 function renderStates() {
   const q = $('stateSearch').value.toLowerCase();
   renderList('states', allStates.filter(s => s.v.toLowerCase().includes(q)), 'states');
+  renderZones();
+}
+// time zones: a state split between two zones counts in the zone where most of its people live
+const TIME_ZONES = [
+  ['Eastern', 'CT DE DC FL GA IN KY ME MD MA MI NH NJ NY NC OH PA RI SC VT VA WV'],
+  ['Central', 'AL AR IL IA KS LA MN MS MO NE ND OK SD TN TX WI'],
+  ['Mountain', 'AZ CO ID MT NM UT WY'],
+  ['Pacific', 'CA NV OR WA'],
+  ['Alaska', 'AK'],
+  ['Hawaii', 'HI'],
+  ['Territories & military', 'PR VI GU MP AS AA AE AP'],
+].map(([name, codes]) => ({ name, codes: codes.split(' ') }));
+const SPLIT_NOTE = 'States split between zones are counted in their main zone: FL, IN, KY, MI Eastern; TX, TN, KS, NE, ND, SD Central; ID Mountain; OR, NV Pacific.';
+function zoneStates(z) { const have = new Map(allStates.map(s => [s.v, s.n])); return z.codes.filter(c => have.has(c)).map(c => ({ v: c, n: have.get(c) })); }
+function renderZones() {
+  $('zones').innerHTML = TIME_ZONES.map((z, i) => {
+    const st = zoneStates(z), picked = st.filter(s => sel.states.has(s.v)).length;
+    if (!st.length) return '';
+    const cls = picked === st.length ? 'on' : picked ? 'part' : '';
+    const n = st.reduce((a, s) => a + Number(s.n || 0), 0);
+    return `<button class="${cls}" onclick="toggleZone(${i})" title="${esc(z.name)}: ${esc(st.map(s => s.v).join(', '))}&#10;${esc(SPLIT_NOTE)}">${esc(z.name)} <span class="muted">${fmt(n)}</span></button>`;
+  }).join('');
+  const chosen = [...sel.states].sort();
+  $('stateSummary').textContent = (chosen.length ? `${chosen.length} state${chosen.length === 1 ? '' : 's'} selected: ${chosen.join(', ')}` : '')
+    + (stateListNote ? (chosen.length ? ' · ' : '') + stateListNote : '');
+}
+// state names and codes typed or pasted as a list: "TX, FL, CA" / "Texas; Florida" / one per line
+const STATE_NAME_CODES = {alabama:'AL',alaska:'AK',arizona:'AZ',arkansas:'AR',california:'CA',colorado:'CO',connecticut:'CT',delaware:'DE',
+  'district of columbia':'DC','washington dc':'DC','washington d.c.':'DC',florida:'FL',georgia:'GA',hawaii:'HI',idaho:'ID',illinois:'IL',indiana:'IN',
+  iowa:'IA',kansas:'KS',kentucky:'KY',louisiana:'LA',maine:'ME',maryland:'MD',massachusetts:'MA',michigan:'MI',minnesota:'MN',mississippi:'MS',
+  missouri:'MO',montana:'MT',nebraska:'NE',nevada:'NV','new hampshire':'NH','new jersey':'NJ','new mexico':'NM','new york':'NY',
+  'north carolina':'NC','north dakota':'ND',ohio:'OH',oklahoma:'OK',oregon:'OR',pennsylvania:'PA','rhode island':'RI','south carolina':'SC',
+  'south dakota':'SD',tennessee:'TN',texas:'TX',utah:'UT',vermont:'VT',virginia:'VA',washington:'WA','west virginia':'WV',wisconsin:'WI',
+  wyoming:'WY','puerto rico':'PR','virgin islands':'VI',guam:'GU','american samoa':'AS','northern mariana islands':'MP'};
+let stateListNote = '';
+function stateCode(t) {
+  const k = t.trim().toLowerCase().replace(/\s+/g, ' ').replace(/^us-/, '');
+  return STATE_NAME_CODES[k] || (/^[a-z]{2}$/.test(k) ? k.toUpperCase() : null);
+}
+// all=false while typing: only entries already followed by a comma are taken, the rest stays in the box as a filter
+function applyStateList(all) {
+  const box = $('stateSearch'), v = box.value;
+  if (!/[,;\n]/.test(v) && !all) { renderStates(); return; }
+  const parts = v.split(/[,;\n]+/), rest = all ? '' : parts.pop();
+  const have = new Set(allStates.map(s => s.v)), added = [], missing = [];
+  parts.map(t => t.trim()).filter(Boolean).forEach(t => {
+    const c = stateCode(t);
+    if (c && have.has(c)) { if (!sel.states.has(c)) { sel.states.add(c); added.push(c); } } else missing.push(t);
+  });
+  if (all && !added.length && !missing.length && !parts.some(t => t.trim())) { renderStates(); return; }
+  box.value = rest.trimStart();
+  stateListNote = missing.length ? `Not found: ${missing.join(', ')}` : '';
+  renderStates();
+  if (added.length) { loadCities(); schedule(); }
+}
+// click a zone: select all its states, or unselect them when they are all selected already
+function toggleZone(i) {
+  const st = zoneStates(TIME_ZONES[i]).map(s => s.v), all = st.every(c => sel.states.has(c));
+  st.forEach(c => all ? sel.states.delete(c) : sel.states.add(c));
+  renderStates(); loadCities(); schedule();
 }
 async function loadCities() { renderList('cities', await api().get_cities([...sel.states], $('citySearch').value, srcList()), 'cities', it => it.label); }
 
